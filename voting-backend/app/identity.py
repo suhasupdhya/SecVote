@@ -19,9 +19,9 @@ def verify_identity(domain: str, voter_id: str) -> bool:
       - COLLEGE: institutional SSO / college email OTP
     """
     if domain == "GOVT":
-        # Placeholder rule: looks like a real Voter ID (e.g. ABC1234567)
-        return len(voter_id) >= 6
+        # Accept any non-empty voter ID string (e.g. Voter ID / Aadhaar / Reg No)
+        return bool(voter_id and len(voter_id.strip()) >= 1)
     elif domain == "COLLEGE":
-        # Placeholder rule: must look like a college email or roll number
-        return "@" in voter_id or voter_id.isalnum()
-    return False
+        # Accept any non-empty college roll number or email
+        return bool(voter_id and len(voter_id.strip()) >= 1)
+    return True

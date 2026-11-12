@@ -2,3 +2,10 @@ fastapi
 uvicorn
 web3
 pydantic
+sqlalchemy
+psycopg2-binary
+alembic
+pyjwt
+python-multipart
+resend
+python-dotenv

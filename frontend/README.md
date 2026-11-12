@@ -1,16 +1,33 @@
-# React + Vite
+# SecVote — Frontend (React + Vite)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+This is the web UI for the SecVote platform. It provides dashboards for:
+- **Admins**: Create elections, set eligible voters, and issue voter secret tokens.
+- **Voters**: Authenticate via OTP, retrieve voter secret, select candidates, and cast encrypted votes on-chain.
+- **Public**: View real-time election results and tally verification.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 🚀 How to Run
 
-## React Compiler
+### Prerequisites
+Make sure the **local blockchain** and **backend API** are running first (see [Main README](../README.md)).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### Start Development Server
+```bash
+# 1. Install dependencies
+npm install
 
-## Expanding the Oxlint configuration
+# 2. Run dev server
+npm run dev
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+The app will be available at: **http://localhost:5173**
+
+---
+
+## 📜 Available Scripts
+
+- `npm run dev`: Starts the Vite development server with HMR.
+- `npm run build`: Bundles the app for production in `dist/`.
+- `npm run preview`: Locally previews the production build.
+- `npm run lint`: Runs Oxlint code analysis.

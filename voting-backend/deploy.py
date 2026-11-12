@@ -37,11 +37,10 @@ def deploy():
     # on a local test chain that's had its time fast-forwarded during testing,
     # the two can drift apart.
     chain_now = w3.eth.get_block("latest")["timestamp"]
-    start_time = chain_now + 3600          # opens in 1 hour — time to register voters & generate secrets first
-    end_time = start_time + 60 * 60 * 24  # open for 24 hours after that
+    start_time = chain_now - 60          # Open immediately upon deployment
+    end_time = start_time + 60 * 60 * 24 * 30  # open for 30 days
 
     # Placeholder root — real one gets set once voters are registered
-    # (see /admin/generate-secrets in the API). Zero root = no one can vote yet.
     placeholder_root = b"\x00" * 32
 
     tx_hash = factory.functions.createElection(
@@ -73,6 +72,28 @@ def deploy():
             indent=2,
         )
     print(f"\nSaved deployment info to {DEPLOYED_FILE}")
+
+    # Sync real deployed address into secvote.db
+    from app.store import store
+    from app.database import SessionLocal
+    from app.models import Election as ElectionModel
+    db = SessionLocal()
+    try:
+        # Clear any stale test elections with dummy addresses
+        db.query(ElectionModel).filter(ElectionModel.contract_address == "0x1234567890123456789012345678901234567890").delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    store.add_election(
+        election_id=election_id,
+        address=election_address,
+        domain="COLLEGE",
+        title="SRM Student Council Election 2026"
+    )
+    print("✅ Synced real deployed contract address to secvote.db.")
 
 
 if __name__ == "__main__":

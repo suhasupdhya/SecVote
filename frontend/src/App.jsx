@@ -1,88 +1,135 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Navbar from './components/Navbar';
 import VoterView from './components/VoterView';
 import AdminView from './components/AdminView';
-import { ShieldCheck, Info } from 'lucide-react';
+import LoginPage from './components/LoginPage';
+import { ShieldCheck } from 'lucide-react';
+import { checkBackendHealth, logoutAdmin } from './services/api';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('voter');
+  const [userRole, setUserRole] = useState(null); // null (not logged in), 'voter', or 'admin'
+  const [currentUser, setCurrentUser] = useState(null);
   const [electionId, setElectionId] = useState(0);
   const [showSecurityModal, setShowSecurityModal] = useState(false);
+  const [isBackendLive, setIsBackendLive] = useState(null);
+
+  useEffect(() => {
+    const verifyHealth = async () => {
+      const live = await checkBackendHealth();
+      setIsBackendLive(live);
+    };
+
+    verifyHealth();
+    const interval = setInterval(verifyHealth, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleVoterLogin = (voterData) => {
+    setCurrentUser(voterData);
+    setUserRole('voter');
+  };
+
+  const handleAdminLogin = (username) => {
+    setCurrentUser({ username });
+    setUserRole('admin');
+  };
+
+  const handleLogout = () => {
+    logoutAdmin();
+    setUserRole(null);
+    setCurrentUser(null);
+  };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
+    <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
       {/* Top Navbar */}
       <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        electionId={electionId}
-        setElectionId={setElectionId}
+        isBackendLive={isBackendLive}
+        userRole={userRole}
+        currentUser={currentUser}
+        onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
-        {/* Quick Info Bar */}
-        <div className="mb-6 bg-indigo-950/40 border border-indigo-500/20 rounded-xl p-3 flex items-center justify-between text-xs text-indigo-300">
-          <div className="flex items-center space-x-2">
-            <Info className="h-4 w-4 text-indigo-400 shrink-0" />
-            <span>
-              Connected to local FastAPI backend (<code className="text-white bg-indigo-900/60 px-1.5 py-0.5 rounded font-mono">http://127.0.0.1:8000</code>).
-            </span>
-          </div>
-
-          <button
-            onClick={() => setShowSecurityModal(true)}
-            className="text-indigo-400 hover:text-indigo-200 underline font-medium flex items-center gap-1"
-          >
-            <span>How Security Works</span>
-          </button>
-        </div>
-
-        {/* View Switcher */}
-        {activeTab === 'voter' ? (
-          <VoterView electionId={electionId} />
+        {/* Auth Gated Screen Switcher */}
+        {userRole === null ? (
+          <LoginPage
+            onVoterLogin={handleVoterLogin}
+            onAdminLogin={handleAdminLogin}
+          />
+        ) : userRole === 'voter' ? (
+          <VoterView
+            voterUser={currentUser}
+            onLogout={handleLogout}
+          />
         ) : (
-          <AdminView electionId={electionId} setElectionId={setElectionId} />
+          <AdminView
+            electionId={electionId}
+            setElectionId={setElectionId}
+          />
         )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>SecVote — Blockchain E-Voting System Prototype</span>
-          <span className="font-mono text-slate-600">Solidity + Hardhat + FastAPI + Web3.py + React</span>
+      <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-500 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-slate-600">
+            <span className="font-semibold text-slate-800">SecVote Institutional E-Voting System</span>
+            <span>&bull;</span>
+            <span>Cryptographic Privacy &bull; EVM Ledger Auditability</span>
+          </div>
+          <button
+            onClick={() => setShowSecurityModal(true)}
+            className="text-blue-600 hover:text-blue-800 font-medium underline flex items-center gap-1 cursor-pointer transition-colors"
+          >
+            Security & Verification Architecture
+          </button>
         </div>
       </footer>
 
       {/* Security Info Modal */}
       {showSecurityModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl animate-fade-in">
-            <div className="flex items-center space-x-3 border-b border-slate-800 pb-3">
-              <ShieldCheck className="h-6 w-6 text-indigo-400" />
-              <h3 className="text-base font-bold text-white">SecVote Security Architecture</h3>
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-xl w-full p-6 space-y-5 shadow-2xl animate-fade-in text-slate-800">
+            <div className="flex items-center space-x-3 border-b border-slate-100 pb-3.5">
+              <div className="h-9 w-9 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">SecVote Cryptographic Architecture</h3>
+                <p className="text-xs text-slate-500">How voter secrecy and universal auditability are enforced</p>
+              </div>
             </div>
 
-            <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <h4 className="font-semibold text-indigo-300 mb-1">1. Merkle Tree Voter Eligibility</h4>
-                <p className="text-slate-400">
-                  Admin commits a single cryptographic Merkle Root on-chain. Eligible voters verify membership using Merkle proofs without publishing voter lists on-chain.
+            <div className="space-y-3 text-xs leading-relaxed">
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <h4 className="font-semibold text-slate-900 mb-1 flex items-center gap-2">
+                  <span className="h-5 w-5 rounded-full bg-blue-100 text-blue-700 font-bold text-[11px] flex items-center justify-center">1</span>
+                  Merkle Tree Eligibility Verification
+                </h4>
+                <p className="text-slate-600 pl-7">
+                  Voter eligibility is verified using cryptographic Merkle proofs evaluated against a single immutable 32-byte root published on-chain. Voter names, registration numbers, and identities are never stored on the public blockchain.
                 </p>
               </div>
 
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <h4 className="font-semibold text-emerald-300 mb-1">2. One-Time Secrets & Nullifier Protection</h4>
-                <p className="text-slate-400">
-                  Each vote marks a unique nullifier hash on the smart contract. Double-voting attempts are rejected immediately by the blockchain EVM engine.
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <h4 className="font-semibold text-slate-900 mb-1 flex items-center gap-2">
+                  <span className="h-5 w-5 rounded-full bg-emerald-100 text-emerald-700 font-bold text-[11px] flex items-center justify-center">2</span>
+                  Single-Use Cryptographic Nullifiers
+                </h4>
+                <p className="text-slate-600 pl-7">
+                  Every ballot requires a single-use nullifier derived from the voter's one-time secret. Once cast, the smart contract marks the nullifier as spent on-chain. Any duplicate voting attempt is immediately reverted by the Ethereum Virtual Machine.
                 </p>
               </div>
 
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <h4 className="font-semibold text-cyan-300 mb-1">3. Voter Privacy & Unlinkability</h4>
-                <p className="text-slate-400">
-                  No voter ID, Aadhaar number, or identity credential is saved with the candidate selection. The ballot commitment on-chain is voter-anonymous.
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <h4 className="font-semibold text-slate-900 mb-1 flex items-center gap-2">
+                  <span className="h-5 w-5 rounded-full bg-indigo-100 text-indigo-700 font-bold text-[11px] flex items-center justify-center">3</span>
+                  Gasless Transaction Relayer & Public Receipts
+                </h4>
+                <p className="text-slate-600 pl-7">
+                  Ballots are relayed to the smart contract via a secure backend relayer, meaning voters do not need cryptocurrency wallets or gas fees. Every voter receives a 66-character EVM transaction receipt for independent audit verification.
                 </p>
               </div>
             </div>
@@ -90,7 +137,7 @@ export default function App() {
             <div className="pt-2 flex justify-end">
               <button
                 onClick={() => setShowSecurityModal(false)}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-4 py-2 rounded-xl text-xs"
+                className="bg-slate-900 hover:bg-slate-800 text-white font-semibold px-4 py-2 rounded-xl text-xs cursor-pointer transition-colors"
               >
                 Close Explanation
               </button>

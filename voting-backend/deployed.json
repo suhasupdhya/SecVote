@@ -1,7 +1,7 @@
 {
-  "factory_address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-  "owner_account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "election_admin_account": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "factory_address": "0xe1b02567F395a7A35e4b17bccF0FBCA0A1c0E9cB",
+  "owner_account": "0x55A078D152BB6323A42A9902bC353D08bd6FAF68",
+  "election_admin_account": "0x9D8ffEF3AC7Ac842A0a4dae8287109F66E16A888",
   "demo_election_id": 0,
-  "demo_election_address": "0xa16E02E87b7454126E5E10d957A927A7F5B5d2be"
+  "demo_election_address": "0xa65aa0C08F73bE5125e1Bc8e9c4DE1b6d7157e53"
 }

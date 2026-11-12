@@ -1,37 +1,71 @@
-# Blockchain E-Voting Platform — Smart Contracts
+# SecVote — Smart Contracts (Solidity)
 
-## Setup
-```
+Solidity smart contracts for the SecVote platform. Contains anti-fraud mechanisms (Merkle proof eligibility checks, nullifier double-vote protection) and multi-election factory tracking.
+
+---
+
+## 🚀 How to Run
+
+### Setup
+```bash
 npm install
 ```
 
-## Verify contracts compile (no network access needed — uses npm solc)
+### Start Local Blockchain Node
+```bash
+npx ganache
 ```
+This runs a local RPC endpoint at `http://127.0.0.1:8545`. Keep this running when testing or running the backend.
+
+---
+
+## 🧪 Contracts Compilation & Testing
+
+### Compile Contracts
+Compiles Solidity contracts and outputs JSON ABIs/Bytecode to `../voting-backend/contracts_abi/`:
+```bash
 node compile.js
 ```
 
-## Run the full end-to-end test
-Deploys the factory, creates a "COLLEGE" election, builds a Merkle tree of
-eligible voters off-chain, casts valid votes, and proves double-voting and
-fake-voter attempts are rejected on-chain.
-```
+### End-to-End Anti-Fraud Test
+Deploys `ElectionFactory`, creates an election, builds off-chain Merkle tree, casts valid votes, and verifies invalid/duplicate votes are rejected:
+```bash
 node test/fullFlow.js
 ```
 
-## Files
-- `contracts/Election.sol` — single election instance: eligibility check via
-  Merkle proof, one-time nullifier (prevents double voting), time-boxed
-  voting window, public tallying.
-- `contracts/ElectionFactory.sol` — deploys/tracks many Election instances so
-  the same platform can run govt elections and college elections concurrently.
-- `test/fullFlow.js` — end-to-end proof of the anti-fraud guarantees.
-- `compile.js` — standalone compile script (works without hitting
-  binaries.soliditylang.org, useful in restricted-network environments).
+---
 
-## Next steps (not yet built)
-- Backend (Node/Express or FastAPI) that:
-  - runs the Identity Adapter (Aadhaar OTP / college email verification)
-  - generates and privately delivers voter secrets
-  - builds the Merkle tree and relays `castVote` transactions on the voter's
-    behalf (protects secrets from mempool front-running)
-- React frontend for voters and an admin dashboard for election creation.
+## 📂 Key Contracts
+- `contracts/Election.sol`: Individual election logic, Merkle verification, time window, nullifier storage.
+- `contracts/ElectionFactory.sol`: Factory pattern to deploy and index multiple elections.
+
+
+to run the app
+
+cd voting-contracts
+npm install
+npx ganache
+
+cd voting-backend
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Deploy contracts and populate demo data
+python deploy.py
+
+# Launch FastAPI backend server
+python -m uvicorn app.main:app --reload
+
+
+cd frontend
+
+# Install Node dependencies
+npm install
+
+# Start Vite dev server
+npm run dev
+
+
+
+

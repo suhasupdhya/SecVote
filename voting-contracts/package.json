@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "compile": "node compile.js",
-    "test": "node test/fullFlow.js"
+    "test": "node test/fullFlow.js",
+    "ganache": "ganache --wallet.deterministic"
   },
   "keywords": [],
   "author": "",

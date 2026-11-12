@@ -20,7 +20,11 @@ function compile() {
   const input = {
     language: "Solidity",
     sources,
-    settings: { outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } } },
+    settings: {
+      evmVersion: "paris",
+      optimizer: { enabled: true, runs: 200 },
+      outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
+    },
   };
   const output = JSON.parse(solc.compile(JSON.stringify(input), { import: findImports }));
   const get = (file, name) => ({

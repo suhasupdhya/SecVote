@@ -21,6 +21,7 @@ const input = {
   language: "Solidity",
   sources,
   settings: {
+    evmVersion: "paris",
     outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
     optimizer: { enabled: true, runs: 200 },
   },
@@ -38,10 +39,29 @@ if (output.errors) {
 
 if (!hadError) {
   console.log("\n✅ Compilation succeeded, no errors.\n");
+  const outDir = path.resolve("../voting-backend/contracts_abi");
+  if (!fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir, { recursive: true });
+  }
+
   for (const file of Object.keys(output.contracts)) {
     for (const contractName of Object.keys(output.contracts[file])) {
-      const bytecodeLen = output.contracts[file][contractName].evm.bytecode.object.length / 2;
-      console.log(`  ${contractName}: ${bytecodeLen} bytes bytecode`);
+      const contractData = output.contracts[file][contractName];
+      const bytecode = contractData.evm.bytecode.object;
+      const abi = contractData.abi;
+
+      const artifact = {
+        contractName,
+        abi,
+        bytecode: bytecode.startsWith("0x") ? bytecode : "0x" + bytecode
+      };
+
+      fs.writeFileSync(
+        path.join(outDir, `${contractName}.json`),
+        JSON.stringify(artifact, null, 2)
+      );
+
+      console.log(`  ${contractName}: ${bytecode.length / 2} bytes bytecode -> saved to ${outDir}/${contractName}.json`);
     }
   }
 } else {

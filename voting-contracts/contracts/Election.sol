@@ -91,9 +91,9 @@ contract Election {
         }
     }
 
-    /// @notice Admin can correct the eligible-voter list only before voting opens.
+    /// @notice Admin can update the eligible-voter Merkle root before election finalization.
     function updateMerkleRoot(bytes32 _newRoot) external onlyAdmin {
-        require(block.timestamp < startTime, "Election: cannot change root once voting starts");
+        require(!finalized, "Election: election is finalized");
         merkleRoot = _newRoot;
         emit MerkleRootUpdated(_newRoot);
     }

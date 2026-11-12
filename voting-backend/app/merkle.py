@@ -23,8 +23,8 @@ class MerkleTree:
     def __init__(self, leaves: List[bytes]):
         if not leaves:
             raise ValueError("MerkleTree needs at least one leaf")
-        self.leaves = leaves
-        self.layers = self._build_layers(leaves)
+        self.leaves = sorted(leaves)
+        self.layers = self._build_layers(self.leaves)
 
     def _build_layers(self, leaves: List[bytes]) -> List[List[bytes]]:
         layers = [leaves]
