@@ -1,0 +1,72 @@
+[project]
+name = "secvote"
+version = "2.0.0"
+description = "SecVote v2 API and worker: organiser + anonymous relay. Never holds voter secrets."
+requires-python = ">=3.12"
+dependencies = [
+    "argon2-cffi>=25.1.0",
+    "beanie>=2",
+    "eciespy>=0.4",
+    "email-validator>=2.3.0",
+    "fakeredis>=2.40.0",
+    "fastapi>=0.162.5",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.16.2",
+    "pymongo>=4.10",
+    "python-multipart>=0.0.33",
+    "redis>=8.1.0",
+    "uvicorn[standard]>=0.54.0",
+    "web3>=7,<8",
+]
+
+[project.scripts]
+secvote-api = "secvote.main:run"
+secvote-worker = "secvote.workers.__main__:main"
+secvote-bootstrap-admin = "secvote.cli.bootstrap_admin:main"
+secvote-reset-password = "secvote.cli.reset_password:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/secvote"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "RUF"]
+ignore = ["S101", "B008", "RUF012", "E501", "E711", "E712"]  # E71x: Beanie query DSL
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S108"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = ["chain: needs anvil + forge on PATH"]
+addopts = "-m \"not chain\""
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "ruff>=0.17.4",
+]
+
+[[tool.mypy.overrides]]
+module = ["eth_utils", "eth_utils.*"]
+implicit_reexport = true

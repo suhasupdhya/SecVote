@@ -1,0 +1,23 @@
+{
+  "name": "@secvote/verifier",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Recount a SecVote election from chain data alone. No SecVote server needed.",
+  "bin": {
+    "secvote-verify": "./src/cli.ts"
+  },
+  "scripts": {
+    "verify": "tsx src/cli.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@secvote/shared": "workspace:^",
+    "viem": "2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "5"
+  }
+}

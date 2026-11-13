@@ -1,0 +1,42 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^7.0.6",
+    "@noble/hashes": "^2.4.0",
+    "@secvote/shared": "workspace:^",
+    "@semaphore-protocol/core": "4.14.5",
+    "@tanstack/react-query": "5",
+    "jsqr": "1.4.0",
+    "lucide-react": "^1.72.0",
+    "next": "16.4.6",
+    "qrcode": "1.5.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-hook-form": "7",
+    "viem": "2",
+    "zod": "4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65",
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@types/qrcode": "1.5.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "fake-indexeddb": "^6.2.8",
+    "tailwindcss": "4",
+    "typescript": "^5.9.3",
+    "vitest": "5"
+  }
+}

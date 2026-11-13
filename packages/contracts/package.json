@@ -1,0 +1,21 @@
+{
+  "name": "@secvote/contracts",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "gen-abis": "node scripts/gen-abis.mjs",
+    "deploy": "forge script script/Deploy.s.sol --broadcast",
+    "fixtures": "node scripts/proof.mjs"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.6.1",
+    "@semaphore-protocol/contracts": "4.14.5",
+    "@zk-kit/lean-imt.sol": "2.0.1",
+    "poseidon-solidity": "0.0.5"
+  },
+  "devDependencies": {
+    "@semaphore-protocol/core": "4.14.5"
+  }
+}

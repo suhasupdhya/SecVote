@@ -1,0 +1,18 @@
+{
+  "name": "secvote",
+  "private": true,
+  "packageManager": "pnpm@10.7.0",
+  "scripts": {
+    "dev": "node scripts/stack.mjs",
+    "dev:reset": "node scripts/stack.mjs --reset",
+    "contracts:build": "pnpm --filter @secvote/contracts build",
+    "contracts:test": "pnpm --filter @secvote/contracts test",
+    "gen-abis": "pnpm --filter @secvote/contracts gen-abis",
+    "api:test": "cd apps/api && uv run pytest",
+    "api:test:chain": "cd apps/api && uv run pytest -m chain",
+    "web:test": "pnpm --filter web test",
+    "web:build": "pnpm --filter web build",
+    "e2e": "pnpm --filter web e2e",
+    "test": "pnpm contracts:test && pnpm api:test && pnpm web:test"
+  }
+}

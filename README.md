@@ -1,185 +1,81 @@
-# SecVote — Blockchain E-Voting Platform
+# SecVote v2
 
-SecVote is a secure, verifiable, anti-fraud blockchain e-voting system. It consists of three main components:
-1. **`voting-contracts`**: Solidity smart contracts (`Election` and `ElectionFactory`) with Merkle proof eligibility verification and anti-double-voting nullifiers.
-2. **`voting-backend`**: FastAPI Python backend using Web3.py to manage elections, issue voter tokens, build Merkle trees, and relay votes to the blockchain.
-3. **`frontend`**: React + Vite UI for admins (election management, voter registration, results) and voters (OTP authentication, voting portal).
+Anonymous, verifiable elections for colleges and organisations, delivered as a web application.
 
----
+- **The server can't see who you voted for.** Your browser creates a secret identity and proves you're on the roll with a zero-knowledge proof (Semaphore v4).
+- **One person, one vote.** A per-election nullifier on-chain rejects any second ballot.
+- **Anyone can check the count.** Every ballot is public on the bulletin board, and the declared result hash can be recomputed by anyone.
 
-## 📋 Prerequisites
+The stack is Next.js 16 + FastAPI (Beanie on PyMongo Async) + MongoDB + Solidity (Foundry/Anvil).
 
-Before running the application, make sure you have installed:
-- **Node.js** (v18 or higher) & **npm** — [Download Node.js](https://nodejs.org/)
-- **Python** (v3.9 or higher) & **pip** — [Download Python](https://www.python.org/)
-
----
-
-## ⚡ Quick Start: How to Run the Website
-
-To run the application easily, execute the commands below in separate terminal windows:
-
-### 1️⃣ Run Backend (`voting-backend`)
-```bash
-cd voting-backend
-pip install -r requirements.txt
-python deploy.py
-python -m uvicorn app.main:app --reload
-```
-> 📍 **Backend API:** `http://127.0.0.1:8000`  
-> 📖 **API Docs (Swagger):** `http://127.0.0.1:8000/docs`
-
-### 2️⃣ Run Frontend (`frontend`)
-```bash
-cd frontend
-npm install
-npm run dev
-```
-> 🌐 **Frontend Web App:** `http://localhost:5173`
-
-### 3️⃣ Run Local Blockchain (`voting-contracts`)
-```bash
-cd voting-contracts
-npm install
-npx ganache
+## Layout
 
 ```
-> ⛓️ **Local Ethereum Node:** `http://127.0.0.1:8545`
-
----
-
-## 🚀 How to Run the Application (Step-by-Step)
-
-To run the complete stack locally, open **3 separate terminal windows** (or tabs) and execute the steps in order:
-
-```
-┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐
-│        Terminal 1         │   │        Terminal 2         │   │        Terminal 3         │
-│     Local Blockchain      │ → │        FastAPI API        │ → │        React UI           │
-│       (npx ganache)       │   │  (deploy.py + uvicorn)    │   │      (npm run dev)        │
-└───────────────────────────┘   └───────────────────────────┘   └───────────────────────────┘
+apps/web/             Next.js 16 web app: voter, admin, bulletin, tracker; browser crypto in src/lib/crypto
+apps/api/             FastAPI API + worker (same codebase): auth, elections, registrations, anonymous relay,
+                      tx outbox, event indexer
+packages/contracts/   Foundry: Election (clone) + ElectionFactory on Semaphore v4; unit/fuzz/invariant/real-proof tests
+packages/shared/      Generated ABIs, ballot codecs, ECIES, Shamir, tally (plurality + IRV), verifyElection()
+packages/verifier/    Standalone recount CLI: RPC URL + contract address in, MATCH / NO MATCH out
+docs/                 threat-model.md, ballot-format.md, adr/
+scripts/stack.mjs     Boots everything locally (no Docker)
 ```
 
-### Step 1: Start the Local Blockchain
+The v1 code is preserved on the `v1-archive` branch and the `v1-final` tag.
 
-In **Terminal 1**, start a local Ethereum blockchain node using Ganache:
+## Prerequisites
+- Node 22+, pnpm 10, Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- [Foundry](https://book.getfoundry.sh/) (`forge`, `anvil`, `cast`) on PATH or in `~/.foundry/bin`
+- MongoDB at `mongodb://127.0.0.1:27017`, or set `SECVOTE_MONGODB_URI` (Atlas works)
+- Redis is optional. Without `SECVOTE_REDIS_URL`, dev mode uses in-process fakeredis.
+
+## Run it
 
 ```bash
-cd voting-contracts
-npm install
-npx ganache
+pnpm install
 ```
-
-> ℹ️ **Keep this terminal running!** It hosts the local blockchain at `http://127.0.0.1:8545`.
-
----
-
-### Step 2: Deploy Contracts & Start the Backend
-
-In **Terminal 2**, install Python dependencies, deploy the smart contracts to Ganache, and launch the FastAPI server:
 
 ```bash
-cd voting-backend
-
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Deploy contracts and initialize demo election data
-python deploy.py
-
-# 3. Start the FastAPI backend server
-python -m uvicorn app.main:app --reload
+cd apps/api && uv sync && cd ../..
 ```
-
-> ✅ **Backend Server:** `http://127.0.0.1:8000`  
-> 📖 **Interactive API Documentation (Swagger):** `http://127.0.0.1:8000/docs`
-
----
-
-### Step 3: Start the Frontend
-
-In **Terminal 3**, install Node modules and launch the Vite development server:
 
 ```bash
-cd frontend
-
-# 1. Install dependencies
-npm install
-
-# 2. Start the development server
-npm run dev
+pnpm dev
 ```
 
-> 🌐 **Frontend Web App:** `http://localhost:5173` (or `http://127.0.0.1:5173`)
+`pnpm dev` does the following:
+- starts a fresh Anvil chain
+- deploys Semaphore and the factory
+- regenerates the ABIs
+- creates a one-time admin and prints its credentials
+- starts the API (:8000), the worker and the web app (:3000)
 
----
+With the console email backend, OTP codes are written to `.e2e/mailbox.jsonl`.
 
-## 📂 Project Structure
+## Test
 
-```
-SecVote/
-├── frontend/                 # React + Vite frontend application
-│   ├── src/
-│   │   ├── components/      # UI components (Admin, Voter, Results)
-│   │   ├── services/        # Axios API client (`api.js`)
-│   │   ├── App.jsx          # Main App routing & state
-│   │   └── main.jsx         # Entry point
-│   ├── package.json
-│   └── vite.config.js
-│
-├── voting-backend/           # FastAPI backend server
-│   ├── app/
-│   │   ├── main.py          # REST API endpoints
-│   │   ├── blockchain.py    # Web3 interface to local Ethereum node
-│   │   ├── merkle.py        # Merkle tree & proof generator
-│   │   ├── identity.py      # Voter OTP authentication module
-│   │   └── store.py         # In-memory data storage
-│   ├── deploy.py            # Deploys ElectionFactory & creates demo election
-│   ├── deployed.json        # Contract deployment metadata
-│   └── requirements.txt     # Python requirements
-│
-└── voting-contracts/         # Solidity smart contracts
-    ├── contracts/
-    │   ├── Election.sol        # Core voting logic & Merkle verification
-    │   └── ElectionFactory.sol # Factory contract to create elections
-    ├── test/
-    │   └── fullFlow.js      # Anti-fraud E2E verification test
-    ├── compile.js           # Solc contract compiler script
-    └── package.json
-```
+| What | Command |
+|---|---|
+| Contracts (unit, fuzz, invariants, real Groth16 proofs via FFI) | `pnpm contracts:test` |
+| API (auth/OTP/CSRF, registration flow, role × endpoint matrix) | `pnpm api:test` |
+| API against a real chain (outbox, indexer, crash recovery, relay) | `pnpm api:test:chain` |
+| Browser crypto (ballot codec, identity backup, cross-language vector) | `pnpm web:test` |
+| Shared crypto + tally (TS), incl. cross-language vectors | `pnpm --filter @secvote/shared test` |
+| **MVP + Phase 4 gates**: open and sealed elections through the UI on Anvil (Playwright) | `pnpm e2e` |
 
----
-
-## 🧪 Testing & Utilities
-
-### Smart Contract Verification
-To test contract compilation and run end-to-end blockchain tests without starting the backend:
+### Verify any election yourself
 ```bash
-cd voting-contracts
-node compile.js        # Compiles contracts to voting-backend/contracts_abi
-node test/fullFlow.js  # Runs standalone anti-fraud end-to-end test
+pnpm --filter @secvote/verifier verify --rpc http://127.0.0.1:8545 --election 0xYourElectionAddress
 ```
+It needs only an RPC URL and the contract address. It decrypts and recounts every ballot and prints MATCH or NO MATCH against the declared result.
 
-### Frontend Build
-To build the production frontend bundle:
-```bash
-cd frontend
-npm run build
-npm run preview        # Preview production build locally
-```
+## Roadmap status
+- [x] Phase 0: foundation (monorepo, docs, CI)
+- [x] Phase 1: accounts and elections (Argon2id, email OTP, cookie sessions + CSRF, two-person approval)
+- [x] Phase 2: contracts (phases, freeze, castBallot, pause; every v1 attack is a Foundry test)
+- [x] Phase 3: voting end to end (browser identity + backup, relayer outbox, indexer, bulletin, tracker, turnout)
+- [x] Phase 4: sealed ballots (ECIES), 2-of-3 trustee key ceremony, key reveal + off-chain tally, ranked-choice (IRV), verify page + standalone verifier CLI
+- [ ] Phase 5: passkey identity, Safe multisig officers, audit anchoring, OCR pre-check, Tamil UI
+- [ ] Phase 6: Base Sepolia deploy, Docker/hosting, strict CSP, load test
 
----
-
-## ❓ Troubleshooting
-
-- **`sender account not recognized` / failed to create election on-chain**
-  - Occurs when the local Ganache node was stopped and restarted. Ganache generates new accounts upon restart, making older deployed addresses stale.
-  - **Fix:** Run `python deploy.py` inside `voting-backend` to synchronize contracts with the new Ganache instance. SecVote also auto-syncs upon detecting a restarted chain.
-- **`Cannot reach chain at http://127.0.0.1:8545`**
-  - Make sure Ganache is running in **Terminal 1** (`npx ganache` inside `voting-contracts`).
-- **`deployed.json not found`**
-  - Run `python deploy.py` inside `voting-backend` before starting `uvicorn`.
-- **`Port 8000 already in use`**
-  - Kill any process running on port 8000 or run uvicorn on another port (e.g. `--port 8001`).
-- **`CORS or Network Error in Frontend`**
-  - Verify `voting-backend` is active at `http://127.0.0.1:8000`.
+See [SECURITY.md](SECURITY.md) and [docs/threat-model.md](docs/threat-model.md).

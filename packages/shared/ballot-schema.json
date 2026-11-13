@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secvote.local/ballot-format/v1",
+  "title": "SecVote open ballot v1 (see docs/ballot-format.md)",
+  "type": "object",
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "const": 0 },
+    "choices": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255, "description": "candidate index, 254 = NOTA, 255 = ABSTAIN" }
+    }
+  },
+  "required": ["version", "mode", "choices"],
+  "x-encoding": { "size": 64, "nota": 254, "abstain": 255, "padding": "zero" }
+}
