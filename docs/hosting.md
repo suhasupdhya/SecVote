@@ -1,6 +1,6 @@
 # Hosting SecVote
 
-This guide puts SecVote on one Linux server with Docker. Budget about 2 vCPUs, 4 GB RAM and 40 GB of disk.
+This guide puts SecVote on one Linux server with Docker. For Vercel + Render + MongoDB Atlas instead, see [hosting-vercel-render.md](hosting-vercel-render.md). Budget about 2 vCPUs, 4 GB RAM and 40 GB of disk.
 
 ```
  voters ──https──▶ Caddy (TLS) ──▶ web (Next.js) ──/api──▶ API ─┐

@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr = SecretStr("")
 
     upload_dir: Path = API_ROOT / "var" / "uploads"
+    # "disk": files in upload_dir. "mongo": in the database, for hosts without a lasting disk shared by the API and
+    # the worker (e.g. Render). See services/files.py.
+    upload_storage: Literal["disk", "mongo"] = "disk"
     mailbox_file: Path = API_ROOT / "var" / "mailbox.jsonl"  # console email backend (dev only)
     max_upload_bytes: int = 5 * 1024 * 1024
 

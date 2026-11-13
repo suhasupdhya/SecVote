@@ -74,3 +74,21 @@ def test_ballot_rate_limit_uses_the_proxy_header_only_when_configured() -> None:
     assert client_address(_request("172.18.0.3", {}), behind_proxy) == "172.18.0.3"  # type: ignore[arg-type]
     # Not configured (local development): a client-supplied header is ignored, so it can't dodge the limit.
     assert client_address(_request("10.0.0.5", {"X-SecVote-Client": "1.2.3.4"}), _prod()) == "10.0.0.5"  # type: ignore[arg-type]
+
+
+def test_committed_deployment_record_is_used_when_the_generated_file_lacks_the_chain(tmp_path: object) -> None:
+    import json
+    from pathlib import Path
+
+    from secvote.chain import load_deployment
+
+    root = Path(str(tmp_path))
+    shared = root / "packages" / "shared"
+    shared.mkdir(parents=True)
+    (shared / "deployments.json").write_text(json.dumps({"31337": {"electionFactory": "0xlocal"}}))
+    committed = root / "packages" / "contracts" / "deployments"
+    committed.mkdir(parents=True)
+    (committed / "84532.json").write_text(json.dumps({"electionFactory": "0xbase", "chainId": 84532}))
+
+    assert load_deployment(_prod(shared_dir=shared, chain_id=84532))["electionFactory"] == "0xbase"
+    assert load_deployment(_prod(shared_dir=shared, chain_id=31337))["electionFactory"] == "0xlocal"

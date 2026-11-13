@@ -1,0 +1,101 @@
+# Render Blueprint: the SecVote API, its worker, and Redis (Render "Key Value").
+# Render dashboard -> New -> Blueprint -> pick this repository. It asks for every `sync: false` value.
+# Step-by-step guide: docs/hosting-vercel-render.md
+#
+# Region: Singapore is Render's closest to India; put the MongoDB Atlas cluster in AWS Singapore (ap-southeast-1) too.
+
+envVarGroups:
+  - name: secvote
+    envVars:
+      # --- Database (MongoDB Atlas). Database files: ID cards are stored here too (SECVOTE_UPLOAD_STORAGE=mongo).
+      - key: SECVOTE_MONGODB_URI
+        sync: false
+      - key: SECVOTE_MONGODB_DB
+        value: secvote
+      - key: SECVOTE_UPLOAD_STORAGE
+        value: mongo
+      # --- Secrets: Render generates long random values once; both services share them.
+      - key: SECVOTE_SESSION_SECRET
+        generateValue: true
+      - key: SECVOTE_OTP_PEPPER
+        generateValue: true
+      - key: SECVOTE_COOKIE_SECURE
+        value: "true"
+      - key: SECVOTE_OFFICIAL_LOGIN_CODE
+        value: "true"
+      # --- Who may sign up, as a JSON list, e.g. ["yourcollege.edu.in"]
+      - key: SECVOTE_ALLOWED_EMAIL_DOMAINS
+        sync: false
+      # --- The website's address (Vercel), e.g. https://secvote.vercel.app, and the same in a JSON list
+      - key: SECVOTE_WEB_URL
+        sync: false
+      - key: SECVOTE_CORS_ORIGINS
+        sync: false
+      # --- Email (Resend: verify your sending domain there first)
+      - key: SECVOTE_EMAIL_BACKEND
+        value: resend
+      - key: SECVOTE_EMAIL_FROM
+        sync: false
+      - key: SECVOTE_RESEND_API_KEY
+        sync: false
+      # --- Blockchain (Base Sepolia test network by default)
+      - key: SECVOTE_RPC_URL
+        value: https://sepolia.base.org
+      - key: SECVOTE_CHAIN_ID
+        value: "84532"
+      - key: SECVOTE_CONFIRMATIONS
+        value: "2"
+      - key: SECVOTE_RELAYER_PRIVATE_KEY
+        sync: false
+      - key: SECVOTE_RELAYER_MIN_BALANCE_WEI
+        value: "10000000000000000"
+      # --- Ballot rate limit per visitor address. Vercel sets X-Forwarded-For to the visitor's address.
+      # A whole campus Wi-Fi shares one address, so allow a generous number per minute.
+      - key: SECVOTE_CLIENT_IP_HEADER
+        value: X-Forwarded-For
+      - key: SECVOTE_BALLOT_RATE_LIMIT_PER_MINUTE
+        value: "300"
+
+services:
+  - type: web
+    name: secvote-api
+    runtime: docker
+    region: singapore
+    plan: starter # free instances sleep after 15 idle minutes: too slow to wake for an election
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: SECVOTE_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: secvote-redis
+          property: connectionString
+      - fromGroup: secvote
+
+  # Exactly ONE worker: it holds the relayer key and sends transactions in order. Never scale it.
+  - type: worker
+    name: secvote-worker
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    dockerCommand: uv run --no-sync secvote-worker
+    envVars:
+      - key: SECVOTE_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: secvote-redis
+          property: connectionString
+      - fromGroup: secvote
+
+  # Sign-in sessions, email codes and rate limits. Reachable only by the two services above.
+  - type: keyvalue
+    name: secvote-redis
+    region: singapore
+    plan: free # loses data on restart (everyone signs in again); use "starter" for election periods
+    maxmemoryPolicy: noeviction
+    ipAllowList: []

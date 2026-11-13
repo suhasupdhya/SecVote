@@ -32,6 +32,12 @@ def load_deployment(settings: Settings) -> dict[str, Any]:
     deployments = json.loads(path.read_text()) if path.exists() else {}
     dep: dict[str, Any] | None = deployments.get(str(settings.chain_id))
     if not dep:
+        # A public network's record is committed (packages/contracts/deployments/<chainId>.json), so a host that
+        # builds from git (e.g. Render) has it even without the generated shared/deployments.json.
+        committed = settings.shared_dir.parent / "contracts" / "deployments" / f"{settings.chain_id}.json"
+        if committed.exists():
+            dep = json.loads(committed.read_text())
+    if not dep:
         raise Unavailable(
             f"No deployment for chain {settings.chain_id} in {path}. Deploy the contracts first."
         )

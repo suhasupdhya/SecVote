@@ -4,7 +4,7 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, BackgroundTasks, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from secvote.api.deps import SettingsDep, UserDep
@@ -240,9 +240,9 @@ async def decline_reset(registration_id: str, user: UserDep, settings: SettingsD
 
 
 @router.get("/registrations/{registration_id}/document")
-async def registration_document(registration_id: str, user: UserDep, settings: SettingsDep) -> FileResponse:
-    path, ctype = await registrations.document_for_review(settings, user, registration_id)
-    return FileResponse(path, media_type=ctype, headers={"Cache-Control": "no-store"})
+async def registration_document(registration_id: str, user: UserDep, settings: SettingsDep) -> Response:
+    data, ctype = await registrations.document_for_review(settings, user, registration_id)
+    return Response(data, media_type=ctype, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/registrations/{registration_id}/approve")

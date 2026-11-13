@@ -78,6 +78,6 @@ It needs only an RPC URL and the contract address. It decrypts and recounts ever
 - [ ] Phase 5: passkey identity, Safe multisig officers, audit anchoring, OCR pre-check, Tamil UI
 - [x] Phase 6 (partly): Docker/hosting setup, strict CSP, self-hosted proving files, production safety checks. Still to do: a real network deployment and a load test
 
-**Hosting:** follow [docs/hosting.md](docs/hosting.md) (Docker Compose + Caddy, contract deployment, production settings).
+**Hosting:** [docs/hosting-vercel-render.md](docs/hosting-vercel-render.md) (Vercel + Render + MongoDB Atlas, step by step), or [docs/hosting.md](docs/hosting.md) (one server with Docker Compose + Caddy).
 
 See [SECURITY.md](SECURITY.md) and [docs/threat-model.md](docs/threat-model.md).

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:hosted": "node ../../scripts/fetch-snark-artifacts.mjs && next build",
     "start": "next start",
     "lint": "tsc --noEmit",
     "test": "vitest run",

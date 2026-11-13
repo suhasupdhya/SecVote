@@ -11,7 +11,7 @@ from secvote.core.config import Settings
 from secvote.db.models import Election, Registration, StoredDocument
 from secvote.domain.enums import ElectionStatus, Phase, RegistrationStatus, TxKind
 from secvote.domain.phases import now_utc
-from secvote.services import clock, elections, txs
+from secvote.services import clock, elections, files, txs
 
 log = logging.getLogger("secvote.scheduler")
 
@@ -114,7 +114,6 @@ async def purge_documents(settings: Settings) -> None:
     """DPDP: delete ID-proof files after their retention date."""
     expired = StoredDocument.find({"delete_after": {"$lt": now_utc()}})
     for doc in await expired.to_list():
-        path = settings.upload_dir / doc.path
-        path.unlink(missing_ok=True)
+        await files.remove(settings, doc.path)
         await doc.delete()
         await Registration.find(Registration.document_id == doc.id).update({"$set": {"document_id": None}})

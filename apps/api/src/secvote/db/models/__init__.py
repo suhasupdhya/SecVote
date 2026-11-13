@@ -164,6 +164,17 @@ class Registration(Document):
         ]
 
 
+class StoredFile(Document):
+    """An uploaded file's bytes, when SECVOTE_UPLOAD_STORAGE=mongo (see services/files.py)."""
+
+    name: str  # StoredDocument.path
+    data: bytes
+
+    class Settings:
+        name = "document_files"
+        indexes = [IndexModel([("name", ASCENDING)], unique=True)]
+
+
 class StoredDocument(Document):
     owner_id: PydanticObjectId
     election_id: PydanticObjectId
@@ -349,6 +360,7 @@ ALL_MODELS: list[type[Document]] = [
     RoleRequest,
     Registration,
     StoredDocument,
+    StoredFile,
     ChainTx,
     Ballot,
     Member,

@@ -12,8 +12,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY apps/api/src ./src
 RUN uv sync --frozen --no-dev
 
-# Contract ABIs (the deployment addresses file is mounted at run time: packages/shared/deployments.json).
+# Contract ABIs and the committed per-network deployment records (packages/contracts/deployments/<chainId>.json).
+# Docker Compose may also mount packages/shared/deployments.json; either is enough.
 COPY packages/shared/abi /app/packages/shared/abi
+COPY packages/contracts/deployments /app/packages/contracts/deployments
 
 # Unprivileged user; uploaded ID cards live in /app/apps/api/var (mount a persistent volume there).
 RUN useradd --system --uid 10001 secvote && mkdir -p var/uploads && chown -R secvote var

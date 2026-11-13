@@ -7,7 +7,6 @@ import logging
 import re
 import secrets
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -40,7 +39,7 @@ from secvote.db.models import (
 from secvote.domain.enums import ElectionStatus, Phase, RegistrationStatus, Role, TxKind
 from secvote.domain.phases import as_utc, now_utc
 from secvote.domain.reapply import MAX_ATTEMPTS, can_reapply
-from secvote.services import audit, invitations, txs
+from secvote.services import audit, files, invitations, txs
 from secvote.services.auth import require_role
 from secvote.services.elections import get, phase_of
 from secvote.services.email import get_email_sender
@@ -150,9 +149,8 @@ async def apply(
         profile.department, profile.year = department, year
         await profile.save()
 
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
     rel = f"{secrets.token_hex(16)}.{ext}"
-    (settings.upload_dir / rel).write_bytes(file_bytes)
+    await files.save(settings, rel, file_bytes)
     doc = StoredDocument(
         owner_id=user.id,
         election_id=e.id,
@@ -223,7 +221,7 @@ async def _reapply(
         }
     )
     if not getattr(res, "modified_count", 0):
-        (settings.upload_dir / rel).unlink(missing_ok=True)
+        await files.remove(settings, rel)
         await doc.delete()
         raise Conflict("You have already applied for this election", code="already_applied")
     # The ID card from the rejected attempt is no longer needed: let the retention job delete it now.
@@ -529,17 +527,17 @@ async def review_queue(
     return out
 
 
-async def document_for_review(settings: Settings, actor: User, reg_id: str) -> tuple[Path, str]:
+async def document_for_review(settings: Settings, actor: User, reg_id: str) -> tuple[bytes, str]:
     require_role(actor, Role.ADMIN)
     reg = await _get(reg_id)
     doc = await StoredDocument.get(reg.document_id) if reg.document_id else None
     if doc is None:
         raise NotFound("No document")
-    path = (settings.upload_dir / doc.path).resolve()
-    if settings.upload_dir.resolve() not in path.parents or not path.exists():
+    data = await files.load(settings, doc.path)
+    if data is None:
         raise NotFound("No document")
     await audit.record(actor.id, "registration.view_document", f"registration:{reg.id}")
-    return path, doc.content_type
+    return data, doc.content_type
 
 
 # ---------------------------------------------------------------- enrolment code
