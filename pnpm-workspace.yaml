@@ -5,3 +5,9 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
   - unrs-resolver
+# Security pins for transitive dependencies (pnpm audit). circom_tester is a circuit-testing tool pulled in by
+# @zk-kit/artifacts and never runs in the app; its old snarkjs is lifted to the version the app itself uses.
+overrides:
+  "ws@>=8.0.0 <8.21.0": ">=8.21.0"
+  "underscore@<1.13.8": ">=1.13.8"
+  "circom_tester>snarkjs": "0.7.5"

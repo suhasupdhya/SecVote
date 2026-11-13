@@ -1,7 +1,7 @@
 """Identity adapters: who is allowed to create an account.
 
-`college_email` is the real one. `aadhaar_mock` exists only to show the seam:
-SecVote never stores Aadhaar numbers (see docs/threat-model.md).
+`college_email` limits sign-up to institution email domains. Other providers (e.g. DigiLocker) can be added
+behind the same interface. SecVote never stores Aadhaar numbers (see docs/threat-model.md).
 """
 
 from __future__ import annotations
@@ -32,15 +32,6 @@ class CollegeEmailProvider:
             raise Forbidden(
                 f"Sign-up is limited to institution emails ({allowed})", code="email_domain_not_allowed"
             )
-
-
-class AadhaarMockProvider:
-    """Mock only. Accepts nothing real and stores nothing."""
-
-    name = "aadhaar_mock"
-
-    def check_signup(self, email: str) -> None:
-        return None
 
 
 def get_identity_provider(settings: Settings) -> IdentityProvider:

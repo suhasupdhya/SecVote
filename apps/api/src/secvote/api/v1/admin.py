@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, BackgroundTasks, Query, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -12,7 +12,7 @@ from secvote.api.schemas import election_out, registration_out, user_out
 from secvote.core.errors import NotFound
 from secvote.db.models import AuditEvent, ChainTx, User
 from secvote.domain.enums import RegistrationStatus, Role
-from secvote.services import audit, elections, registrations, trustees
+from secvote.services import audit, elections, invitations, officials, registrations, trustees, voter_register
 from secvote.services.auth import AuthService, require_role
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -134,11 +134,66 @@ async def declare(election_id: str, user: UserDep) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- eligibility list
+class EligibleEntryIn(BaseModel):
+    reg_no: str = Field(max_length=60)
+    email: str | None = Field(default=None, max_length=320)  # official email; validated in the service
+    name: str | None = Field(default=None, max_length=200)
+
+
 class EligibilityIn(BaseModel):
-    reg_nos: list[str] | None = Field(
-        default=None, max_length=registrations.MAX_ELIGIBLE
-    )  # None: keep the list
+    # Neither given: keep the current list and only change `eligible_only`.
+    entries: list[EligibleEntryIn] | None = Field(default=None, max_length=registrations.MAX_ELIGIBLE)
+    reg_nos: list[str] | None = Field(default=None, max_length=registrations.MAX_ELIGIBLE)  # numbers only
     eligible_only: bool = False
+
+
+class FromRegisterIn(BaseModel):
+    departments: list[str] | None = Field(default=None, max_length=200)  # None: every department
+    years: list[int] | None = Field(default=None, max_length=10)  # None: every year
+    eligible_only: bool = True
+
+
+@router.post("/elections/{election_id}/invitations")
+async def send_invitations(
+    election_id: str, user: UserDep, settings: SettingsDep, background: BackgroundTasks
+) -> dict[str, Any]:
+    """Email everyone on the voter list who hasn't applied yet (and wasn't emailed in the last 12 hours)."""
+    e, due = await invitations.prepare(user, election_id)
+    if due:
+        background.add_task(invitations.send, settings, str(e.id), due)
+    return {"queued": len(due)}
+
+
+@router.post("/elections/{election_id}/eligibility/from-register")
+async def eligibility_from_register(
+    election_id: str, body: FromRegisterIn, user: UserDep, settings: SettingsDep
+) -> dict[str, Any]:
+    return await voter_register.apply_to_election(
+        settings, user, election_id, body.departments, body.years, body.eligible_only
+    )
+
+
+# ---------------------------------------------------------------- institution voter register
+class RegisterEntryIn(BaseModel):
+    reg_no: str = Field(max_length=60)
+    email: str | None = Field(default=None, max_length=320)
+    name: str | None = Field(default=None, max_length=200)
+    department: str | None = Field(default=None, max_length=120)
+    year: int | None = None
+
+
+class RegisterIn(BaseModel):
+    entries: list[RegisterEntryIn] = Field(max_length=registrations.MAX_ELIGIBLE)
+
+
+@router.get("/register")
+async def get_register(user: UserDep) -> dict[str, Any]:
+    return await voter_register.summary(user)
+
+
+@router.put("/register")
+async def put_register(body: RegisterIn, user: UserDep) -> dict[str, Any]:
+    return await voter_register.replace(user, [x.model_dump() for x in body.entries])
 
 
 @router.get("/elections/{election_id}/eligibility")
@@ -150,7 +205,14 @@ async def get_eligibility(election_id: str, user: UserDep) -> dict[str, Any]:
 async def put_eligibility(
     election_id: str, body: EligibilityIn, user: UserDep, settings: SettingsDep
 ) -> dict[str, Any]:
-    return await registrations.set_eligibility(settings, user, election_id, body.reg_nos, body.eligible_only)
+    entries = (
+        [x.model_dump() for x in body.entries]
+        if body.entries is not None
+        else [{"reg_no": r} for r in body.reg_nos]
+        if body.reg_nos is not None
+        else None
+    )
+    return await registrations.set_eligibility(settings, user, election_id, entries, body.eligible_only)
 
 
 # ---------------------------------------------------------------- registrations review
@@ -159,6 +221,22 @@ async def review_queue(
     election_id: str, user: UserDep, status: RegistrationStatus | None = Query(default=None)
 ) -> dict[str, Any]:
     return {"items": await registrations.review_queue(user, election_id, status)}
+
+
+@router.get("/elections/{election_id}/resets")
+async def reset_requests(election_id: str, user: UserDep) -> dict[str, Any]:
+    """Voters who forgot their passphrase and asked to replace their voting identity."""
+    return {"items": await registrations.resets(user, election_id)}
+
+
+@router.post("/registrations/{registration_id}/reset/approve")
+async def approve_reset(registration_id: str, user: UserDep, settings: SettingsDep) -> dict[str, Any]:
+    return registration_out(await registrations.approve_reset(settings, user, registration_id))
+
+
+@router.post("/registrations/{registration_id}/reset/decline")
+async def decline_reset(registration_id: str, user: UserDep, settings: SettingsDep) -> dict[str, Any]:
+    return registration_out(await registrations.decline_reset(settings, user, registration_id))
 
 
 @router.get("/registrations/{registration_id}/document")
@@ -189,17 +267,35 @@ class RoleIn(BaseModel):
 
 
 @router.post("/users/{user_id}/roles")
-async def grant_role(user_id: str, body: RoleIn, user: UserDep) -> dict[str, Any]:
+async def grant_role(user_id: str, body: RoleIn, user: UserDep, settings: SettingsDep) -> dict[str, Any]:
+    """Admin and super-admin promotions come back with pending=true until a second super admin approves."""
     if not PydanticObjectId.is_valid(user_id):
         raise NotFound("User not found")
-    return user_out(await AuthService.grant_role(user, PydanticObjectId(user_id), body.role))
+    res = await officials.grant(settings, user, PydanticObjectId(user_id), body.role)
+    return {**user_out(res["user"]), "pending": res["pending"]}
 
 
 @router.delete("/users/{user_id}/roles/{role}")
-async def revoke_role(user_id: str, role: Role, user: UserDep) -> dict[str, Any]:
+async def revoke_role(user_id: str, role: Role, user: UserDep, settings: SettingsDep) -> dict[str, Any]:
     if not PydanticObjectId.is_valid(user_id):
         raise NotFound("User not found")
-    return user_out(await AuthService.revoke_role(user, PydanticObjectId(user_id), role))
+    return user_out(await officials.revoke(settings, user, PydanticObjectId(user_id), role))
+
+
+@router.get("/role-requests")
+async def role_requests(user: UserDep) -> dict[str, Any]:
+    return {"items": await officials.requests(user)}
+
+
+@router.post("/role-requests/{request_id}/approve")
+async def approve_role_request(request_id: str, user: UserDep, settings: SettingsDep) -> dict[str, Any]:
+    return user_out(await officials.approve(settings, user, request_id))
+
+
+@router.delete("/role-requests/{request_id}")
+async def cancel_role_request(request_id: str, user: UserDep, settings: SettingsDep) -> dict[str, Any]:
+    await officials.cancel(settings, user, request_id)
+    return {"ok": True}
 
 
 @router.get("/users")

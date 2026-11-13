@@ -47,6 +47,69 @@ contract ElectionTest is ElectionTestBase {
         assertEq(election.memberCount(), 5);
     }
 
+    // ================================================================ identity reset (lost passphrase)
+    function _two() internal returns (uint256 a, uint256 b, uint256 fresh) {
+        uint256[] memory c = _commitments(0, 2);
+        _register(election, c);
+        (a, b, fresh) = (c[0], c[1], _commitments(100, 1)[0]);
+    }
+
+    function _siblings(uint256 s) internal pure returns (uint256[] memory out) {
+        out = new uint256[](1);
+        out[0] = s;
+    }
+
+    function test_ReplaceMember_SwapsInPlace() public {
+        (uint256 a, uint256 b, uint256 fresh) = _two();
+        // The same roll built directly with the new identity, for comparison.
+        Election other = _create("election-2", BallotFormat.MODE_OPEN, true);
+        uint256[] memory expected = new uint256[](2);
+        (expected[0], expected[1]) = (fresh, b);
+        vm.prank(registrar);
+        other.addMembers(expected);
+
+        vm.expectEmit(true, false, false, true, address(election));
+        emit Election.MemberReplaced(0, a, fresh, other.currentRoot());
+        vm.prank(registrar);
+        election.replaceMember(a, fresh, _siblings(b));
+
+        assertEq(election.currentRoot(), other.currentRoot());
+        assertEq(election.currentSize(), 2);
+    }
+
+    function test_RevertWhen_ReplaceWithWrongProof() public {
+        (uint256 a,, uint256 fresh) = _two();
+        vm.prank(registrar);
+        vm.expectRevert();
+        election.replaceMember(a, fresh, _siblings(12345));
+    }
+
+    function test_RevertWhen_ReplaceByNonRegistrar() public {
+        (uint256 a, uint256 b, uint256 fresh) = _two();
+        bytes32 role = election.REGISTRAR_ROLE();
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, attacker, role));
+        election.replaceMember(a, fresh, _siblings(b));
+    }
+
+    function test_RevertWhen_ReplaceAfterRegistrationCloses() public {
+        (uint256 a, uint256 b, uint256 fresh) = _two();
+        vm.warp(REG_END);
+        election.freeze();
+        vm.prank(registrar);
+        vm.expectRevert(abi.encodeWithSelector(Election.Election__WrongPhase.selector, Election.Phase.AwaitingVote));
+        election.replaceMember(a, fresh, _siblings(b));
+    }
+
+    function test_RevertWhen_ReplaceAfterEarlyFreeze() public {
+        (uint256 a, uint256 b, uint256 fresh) = _two();
+        vm.prank(officer);
+        election.endRegistrationNow();
+        vm.prank(registrar);
+        vm.expectRevert();
+        election.replaceMember(a, fresh, _siblings(b));
+    }
+
     // ================================================================ V1 #4: double voting
     function test_V1_4_RevertWhen_DoubleVote() public {
         _ready(election);

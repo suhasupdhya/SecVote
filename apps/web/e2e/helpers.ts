@@ -32,11 +32,17 @@ export async function waitPhase(s: Stack, id: string, phase: string) {
   await expect.poll(async () => (await apiElection(s, id)).phase, { timeout: 60_000, intervals: [500] }).toBe(phase)
 }
 
-export async function signIn(page: Page, email: string, password: string) {
+export async function signIn(page: Page, email: string, password: string, s?: Stack) {
   await page.goto("/login")
   await page.getByLabel("Email").fill(email)
   await page.getByLabel("Password").fill(password)
   await page.getByRole("button", { name: "Sign in" }).click()
+  if (s) {
+    // Officials confirm every sign-in with an emailed code.
+    await expect(page.getByLabel("Sign-in code")).toBeVisible()
+    await page.getByLabel("Sign-in code").fill(latestCode(s, email))
+    await page.getByRole("button", { name: "Confirm and sign in" }).click()
+  }
   await page.waitForURL((u) => u.pathname !== "/login")
 }
 

@@ -1,0 +1,72 @@
+# SecVote on one server. See docs/hosting.md.
+#   cd deploy && docker compose up -d --build
+# Needs: deploy/api.env (copy api.env.example), deploy/.env (copy .env.example), and
+# packages/shared/deployments.json for your network (written by scripts/deploy-contracts.mjs).
+name: secvote
+
+services:
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      SECVOTE_DOMAIN: ${SECVOTE_DOMAIN:?set SECVOTE_DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web]
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:?set NEXT_PUBLIC_RPC_URL in deploy/.env}
+        NEXT_PUBLIC_CHAIN_ID: ${NEXT_PUBLIC_CHAIN_ID:?set NEXT_PUBLIC_CHAIN_ID in deploy/.env}
+        SNARK_MAX_DEPTH: ${SNARK_MAX_DEPTH:-16}
+        NEXT_PUBLIC_INSTITUTION_NAME: ${NEXT_PUBLIC_INSTITUTION_NAME:-}
+        NEXT_PUBLIC_PRIVACY_CONTACT: ${NEXT_PUBLIC_PRIVACY_CONTACT:-}
+    restart: unless-stopped
+    depends_on: [api]
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    image: secvote-api
+    restart: unless-stopped
+    env_file: api.env
+    environment:
+      SECVOTE_REDIS_URL: redis://redis:6379/0
+      # Set by Caddy on every request (see Caddyfile); the API is reachable only through Caddy -> web.
+      SECVOTE_CLIENT_IP_HEADER: X-SecVote-Client
+    volumes:
+      - uploads:/app/apps/api/var
+      - ../packages/shared/deployments.json:/app/packages/shared/deployments.json:ro
+    depends_on: [redis]
+
+  # Exactly ONE worker: it holds the relayer key and its transaction nonce. Never scale this service.
+  worker:
+    image: secvote-api
+    restart: unless-stopped
+    command: ["uv", "run", "--no-sync", "secvote-worker"]
+    env_file: api.env
+    environment:
+      SECVOTE_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - uploads:/app/apps/api/var
+      - ../packages/shared/deployments.json:/app/packages/shared/deployments.json:ro
+    depends_on: [api, redis]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis:/data]
+
+volumes:
+  caddy_data:
+  caddy_config:
+  uploads: # ID-card uploads: back this volume up; files are deleted 30 days after each election
+  redis:

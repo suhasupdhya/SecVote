@@ -33,10 +33,15 @@ class User(Document):
     deleted_at: datetime | None = None
     # Sessions issued before this moment are rejected (set when the password is reset).
     sessions_valid_after: datetime | None = None
+    # canonical_email(email): one account per real inbox (a.b@gmail.com == ab+2@gmail.com).
+    email_key: str | None = None
 
     class Settings:
         name = "users"
-        indexes = [IndexModel([("email", ASCENDING)], unique=True)]
+        indexes = [
+            IndexModel([("email", ASCENDING)], unique=True),
+            IndexModel([("email_key", ASCENDING)]),
+        ]
 
     def has_role(self, role: Role) -> bool:
         return role in self.roles
@@ -137,6 +142,12 @@ class Registration(Document):
     enrol_code_attempts: int = 0
     added_tx_id: PydanticObjectId | None = None
     member_index: int | None = None
+    # Lost-passphrase reset (registration only): "requested" by the voter -> "approved" by an official ->
+    # the voter's new identity replaces the old one on the roll in place (replace_tx_id), then cleared.
+    reset_status: str | None = None
+    reset_requested_at: datetime | None = None
+    pending_commitment: str | None = None
+    replace_tx_id: PydanticObjectId | None = None
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -279,12 +290,50 @@ class ElectionTrustee(Document):
         ]
 
 
+class RoleRequest(Document):
+    """A proposed admin / super-admin promotion. It takes effect only when a second super admin approves it."""
+
+    user_id: PydanticObjectId
+    role: Role
+    requested_by: PydanticObjectId
+    created_at: datetime = Field(default_factory=now_utc)
+
+    class Settings:
+        name = "role_requests"
+        indexes = [IndexModel([("user_id", ASCENDING), ("role", ASCENDING)], unique=True)]
+
+
+class RegisterEntry(Document):
+    """The institution's voter register: every eligible person, uploaded once and reused by elections
+    (each election picks departments/years from it). Admin-only; never public."""
+
+    reg_no: str  # normalised: stripped, upper-case
+    email: str | None = None
+    name: str | None = None
+    department: str = ""
+    year: int | None = None
+    updated_at: datetime = Field(default_factory=now_utc)
+
+    class Settings:
+        name = "voter_register"
+        indexes = [
+            IndexModel([("reg_no", ASCENDING)], unique=True),
+            IndexModel([("department", ASCENDING), ("year", ASCENDING)]),
+        ]
+
+
 class EligibleVoter(Document):
     """A registration number the election office has pre-approved for one election.
     Matching applicants are approved without manual review. Never exposed publicly."""
 
     election_id: PydanticObjectId
     reg_no: str  # normalised: stripped, upper-case
+    # Official email from the institution's records. When set, only an account with this email
+    # can use the registration number, so one person can't apply again from a second address.
+    email: str | None = None
+    name: str | None = None
+    invited_at: datetime | None = None  # last invitation email for this election
+    invites: int = 0
 
     class Settings:
         name = "eligible_voters"
@@ -296,6 +345,8 @@ ALL_MODELS: list[type[Document]] = [
     VoterProfile,
     Election,
     EligibleVoter,
+    RegisterEntry,
+    RoleRequest,
     Registration,
     StoredDocument,
     ChainTx,

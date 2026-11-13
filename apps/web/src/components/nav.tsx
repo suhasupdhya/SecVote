@@ -30,7 +30,9 @@ export function Nav() {
     { href: "/trustee", label: "Trustee", icon: Vault, show: !!me?.roles.includes("trustee"), active: pathname === "/trustee" },
     { href: "/admin", label: "Admin console", icon: LayoutDashboard, show: isAdmin, active: pathname.startsWith("/admin") },
   ].filter((l) => l.show)
-  const role = me?.roles.includes("admin")
+  const role = me?.roles.includes("owner")
+    ? "Super admin"
+    : me?.roles.includes("admin")
     ? "Election official"
     : me?.roles.includes("officer")
       ? "Election officer"

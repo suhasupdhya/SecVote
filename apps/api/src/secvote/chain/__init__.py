@@ -135,6 +135,29 @@ class Chain:
             return reason
         return None
 
+    async def relayer_balance(self) -> int:
+        """Wei left on the relayer, which pays the fee for every ballot and admin action."""
+        return int(await self.w3.eth.get_balance(self.relayer.address))
+
+    async def roll_size(self, address: str) -> int:
+        return int(await self.election(address).functions.currentSize().call())
+
+    async def simulate_replace(self, address: str, old: int, new: int, siblings: list[int]) -> str | None:
+        """eth_call replaceMember as the registrar. None if it would succeed; "unsupported" if the contract
+        predates identity resets; otherwise the revert reason (e.g. a stale Merkle proof)."""
+        try:
+            await (
+                self.election(address)
+                .functions.replaceMember(old, new, siblings)
+                .call({"from": self.relayer.address})
+            )
+        except (ContractLogicError, ContractCustomError, ValueError) as exc:
+            data = getattr(exc, "data", None)
+            if not data or data in ("0x", "execution reverted"):
+                return "unsupported"
+            return revert_reason(self.s, exc)
+        return None
+
     async def simulate_cast(self, address: str, proof: dict[str, Any], ballot: bytes) -> str | None:
         """eth_call castBallot. Returns None if it would succeed, else the revert reason."""
         try:

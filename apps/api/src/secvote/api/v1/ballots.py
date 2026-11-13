@@ -20,8 +20,17 @@ router = APIRouter(prefix="/ballots", tags=["ballots"])
 _RL_SALT = secrets.token_bytes(32)
 
 
+def client_address(request: Request, settings: SettingsDep) -> str:
+    """The visitor's address: from the trusted proxy's header when configured, else the connecting peer."""
+    if settings.client_ip_header:
+        forwarded = request.headers.get(settings.client_ip_header, "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    return request.client.host if request.client else "unknown"
+
+
 async def _rate_limit(request: Request, settings: SettingsDep) -> None:
-    ip = request.client.host if request.client else "unknown"
+    ip = client_address(request, settings)
     key = "rl:ballot:" + hmac.new(_RL_SALT, ip.encode(), hashlib.sha256).hexdigest()[:24]
     r = get_redis(settings)
     n = await r.incr(key)

@@ -1,4 +1,4 @@
-export type Role = "voter" | "admin" | "officer" | "trustee" | "observer"
+export type Role = "voter" | "owner" | "admin" | "officer" | "trustee" | "observer"
 export type Phase = "pending" | "registration" | "awaiting_vote" | "voting" | "closed"
 
 export type User = { id: string; email: string; name: string; roles: Role[]; email_verified: boolean }
@@ -44,7 +44,15 @@ export type Election = {
   roll_status?: { pending_review: number; approved_no_identity: number; joining_roll: number; enrolled: number }
 }
 
-export type RegistrationStatus = "pending_review" | "approved" | "rejected" | "commitment_submitted" | "enrolled"
+/** The institution's voter register, summarised for admins. */
+export type RegisterSummary = {
+  count: number
+  with_email: number
+  updated_at: string | null
+  groups: { department: string; year: number | null; count: number }[]
+}
+
+export type RegistrationStatus ="pending_review" | "approved" | "rejected" | "commitment_submitted" | "enrolled"
 
 export type Registration = {
   id: string
@@ -63,6 +71,10 @@ export type Registration = {
   max_attempts: number
   can_reapply: boolean
   auto_approved?: boolean
+  /** lost-passphrase reset: asked for, then approved by an official (new identity replaces the old one) */
+  reset_status?: "requested" | "approved" | null
+  /** the new identity is on its way onto the roll */
+  replacing?: boolean
   enrol_code_sent?: boolean
   enrol_code_expires?: string | null
   phase?: Phase | null
@@ -85,6 +97,10 @@ export type ReviewItem = {
   previous_reject_reason: string | null
   reject_reason: string | null
   on_list: boolean
+  /** name on the office's voter list, to compare with the account name */
+  listed_name: string | null
+  /** possible duplicate-person warnings for the reviewer */
+  flags: string[]
   auto_approved: boolean
 }
 

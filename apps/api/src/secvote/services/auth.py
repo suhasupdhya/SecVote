@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ from redis.asyncio import Redis
 
 from secvote.core import security
 from secvote.core.config import Settings
+from secvote.core.emails import canonical_email
 from secvote.core.errors import Conflict, Forbidden, NotFound, RateLimited, Unauthorized
 from secvote.db.models import User
 from secvote.domain.enums import Role
@@ -22,7 +24,10 @@ from secvote.services.email import get_email_sender
 
 OTP_VERIFY_EMAIL = "verify_email"
 OTP_RESET_PASSWORD = "reset_password"  # noqa: S105 - an OTP purpose label, not a password
-PRIVILEGED = {Role.ADMIN, Role.OFFICER, Role.TRUSTEE}
+OTP_LOGIN = "login"
+log = logging.getLogger(__name__)
+PRIVILEGED = {Role.OWNER, Role.ADMIN, Role.OFFICER, Role.TRUSTEE}  # shorter sessions
+OFFICIALS = {Role.OWNER, Role.ADMIN, Role.OFFICER}  # also need an emailed code at every sign-in
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW = 15 * 60
 
@@ -52,7 +57,16 @@ class AuthService:
         get_identity_provider(self.s).check_signup(email)
         if len(password) < 10:
             raise Conflict("Password must be at least 10 characters", code="weak_password")
-        user = User(email=email, name=name.strip(), password_hash=security.hash_password(password))
+        key = canonical_email(email)
+        if await User.find_one(User.email_key == key, User.deleted_at == None):
+            # Another spelling of the same inbox (dots or +tag): one account per person.
+            raise Conflict(
+                "An account already exists for this email inbox. Sign in instead, or use “Forgot password”.",
+                code="email_taken",
+            )
+        user = User(
+            email=email, email_key=key, name=name.strip(), password_hash=security.hash_password(password)
+        )
         try:
             await user.insert()
         except DuplicateKeyError:
@@ -98,7 +112,16 @@ class AuthService:
         await self.r.set(code_key, digest, ex=self.s.otp_ttl_seconds)
         await self.r.delete(attempts_key)
         minutes = self.s.otp_ttl_seconds // 60
-        if purpose == OTP_RESET_PASSWORD:
+        if purpose == OTP_LOGIN and self.s.env == "dev":
+            # Dev only: dev accounts often use made-up addresses, so show the code in the API log too.
+            log.warning("DEV sign-in code for %s: %s", email, code)
+        if purpose == OTP_LOGIN:
+            subject = "Your SecVote sign-in code"
+            body = (
+                f"Your SecVote sign-in code is {code}. It expires in {minutes} minutes.\n\n"
+                "If you didn't just sign in, someone may know your password: change it now."
+            )
+        elif purpose == OTP_RESET_PASSWORD:
             subject = "Reset your SecVote password"
             body = (
                 f"Your SecVote password reset code is {code}. It expires in {minutes} minutes.\n\n"
@@ -147,6 +170,29 @@ class AuthService:
         await audit.record(user.id, "user.reset_password", f"user:{user.id}")
         return user
 
+    # ------------------------------------------------------------ officials: second sign-in step
+    def needs_login_code(self, user: User) -> bool:
+        return self.s.official_login_code and bool(OFFICIALS & set(user.roles))
+
+    async def start_login_code(self, user: User) -> None:
+        """Password was right; now prove control of the mailbox too. Valid for one OTP lifetime."""
+        await self.r.set(f"login_pending:{user.email}", str(user.id), ex=self.s.otp_ttl_seconds)
+        try:
+            await self.request_otp(user.email, purpose=OTP_LOGIN)
+        except RateLimited:
+            pass  # signed in again within the resend cooldown: the code already sent still works
+
+    async def finish_login_code(self, email: str, code: str) -> User:
+        email = email.strip().lower()
+        pending = await self.r.get(f"login_pending:{email}")
+        if pending is None:
+            raise Unauthorized("Sign in with your password again", code="login_expired")
+        user = await self.verify_otp(email, code, purpose=OTP_LOGIN)
+        if str(user.id) != str(pending) or user.deleted_at is not None:
+            raise Unauthorized("Sign in with your password again", code="login_expired")
+        await self.r.delete(f"login_pending:{email}")
+        return user
+
     async def change_password(self, user: User, current: str, new: str) -> None:
         """Signed-in change. Every existing session (including this one) stops working; the caller
         issues a fresh session for the device that made the change."""
@@ -190,6 +236,13 @@ class AuthService:
         if token:
             await self.r.delete(self._skey(token))
 
+    @staticmethod
+    async def backfill_email_keys() -> None:
+        """Accounts created before email_key existed: fill it in so alias checks cover them too."""
+        async for u in User.find(User.email_key == None, User.deleted_at == None):
+            u.email_key = canonical_email(u.email)
+            await u.save()
+
     # ------------------------------------------------------------ admin bootstrap
     @staticmethod
     async def bootstrap_admin(email: str, name: str, password: str) -> User:
@@ -197,44 +250,14 @@ class AuthService:
             raise Conflict("An admin already exists; bootstrap is one-time only")
         user = User(
             email=email.strip().lower(),
+            email_key=canonical_email(email),
             name=name,
             password_hash=security.hash_password(password),
-            roles=[Role.ADMIN, Role.OFFICER],
+            roles=[Role.OWNER, Role.ADMIN, Role.OFFICER],  # the first admin owns the installation
             email_verified=True,
         )
         await user.insert()
         await audit.record(user.id, "bootstrap_admin", f"user:{user.id}")
-        return user
-
-    @staticmethod
-    async def grant_role(actor: User, user_id: PydanticObjectId, role: Role) -> User:
-        require_role(actor, Role.ADMIN)
-        user = await User.get(user_id)
-        if user is None:
-            raise NotFound("User not found")
-        if role not in user.roles:
-            user.roles.append(role)
-            await user.save()
-            await audit.record(actor.id, "grant_role", f"user:{user.id}", {"role": role.value})
-        return user
-
-    @staticmethod
-    async def revoke_role(actor: User, user_id: PydanticObjectId, role: Role) -> User:
-        require_role(actor, Role.ADMIN)
-        if role == Role.VOTER:
-            raise Conflict("Everyone keeps the voter role")
-        user = await User.get(user_id)
-        if user is None:
-            raise NotFound("User not found")
-        if role == Role.ADMIN:
-            if user.id == actor.id:
-                raise Conflict("You cannot remove your own admin role", code="self_lockout")
-            if await User.find({"roles": Role.ADMIN.value, "deleted_at": None}).count() <= 1:
-                raise Conflict("At least one admin must remain", code="last_admin")
-        if role in user.roles:
-            user.roles.remove(role)
-            await user.save()
-            await audit.record(actor.id, "revoke_role", f"user:{user.id}", {"role": role.value})
         return user
 
     @staticmethod

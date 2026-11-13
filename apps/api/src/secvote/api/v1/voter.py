@@ -78,3 +78,28 @@ async def submit_commitment(
             settings, user, registration_id, body.commitment, body.enrol_code
         )
     )
+
+
+# ---------------------------------------------------------------- lost passphrase: identity reset
+@router.post("/registrations/{registration_id}/reset")
+async def request_reset(registration_id: str, user: UserDep) -> dict[str, Any]:
+    """Ask an official to let you replace your voting identity (registration must still be open)."""
+    return registration_out(await registrations.request_reset(user, registration_id))
+
+
+class ReplaceIn(BaseModel):
+    commitment: str = Field(min_length=1, max_length=80)
+    enrol_code: str = Field(pattern=r"^\d{6}$")
+    # Merkle proof of the old commitment, computed in the browser from the public roll.
+    siblings: list[str] = Field(max_length=32)
+
+
+@router.post("/registrations/{registration_id}/replace")
+async def replace_commitment(
+    registration_id: str, body: ReplaceIn, user: UserDep, settings: SettingsDep
+) -> dict[str, Any]:
+    return registration_out(
+        await registrations.replace_commitment(
+            settings, user, registration_id, body.commitment, body.enrol_code, body.siblings
+        )
+    )

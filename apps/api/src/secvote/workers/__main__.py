@@ -7,7 +7,7 @@ import logging
 import time
 
 from secvote.chain import get_chain
-from secvote.core.config import get_settings
+from secvote.core.config import check_production, get_settings
 from secvote.db import close_db, init_db
 from secvote.workers import scheduler
 from secvote.workers.indexer import Indexer
@@ -18,6 +18,7 @@ log = logging.getLogger("secvote.worker")
 
 async def run() -> None:
     settings = get_settings()
+    check_production(settings)
     await init_db(settings)
     chain = get_chain(settings)
     await chain.check()  # stop if the chain is gone; never redeploy

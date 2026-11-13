@@ -20,7 +20,7 @@ const FAQ = [
   },
   {
     q: "What if I forget my passphrase or lose my device?",
-    a: "Your voting identity is protected by your passphrase and saved on a backup card (an image) when you register. Keep both safe: nobody, including the election office, can recover them for you once the voter roll is locked.",
+    a: "Your voting identity is protected by your passphrase and saved on a backup card (an image) when you register. Lost your device? Use the backup card and passphrase on any other device. Forgot the passphrase? Nobody can recover it, but until registration closes you can press “I forgot my passphrase” on the election's registration page: once an election official approves, you create a new identity that replaces the old one. After registration closes the voter roll is locked, so it can no longer be changed. Use “Check my passphrase” any time to make sure you still remember it.",
   },
   {
     q: "Who decides who is allowed to vote?",

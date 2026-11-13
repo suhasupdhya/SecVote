@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     otp_ttl_seconds: int = 300
     otp_max_attempts: int = 5
     otp_resend_cooldown_seconds: int = 30
+    # Super admins, admins and officers confirm every sign-in with an emailed code. Turn off only for local testing.
+    official_login_code: bool = True
 
     email_backend: Literal["console", "smtp", "resend"] = "console"
     email_from: str = "SecVote <no-reply@example.edu.in>"
@@ -56,8 +58,14 @@ class Settings(BaseSettings):
     shared_dir: Path = REPO_ROOT / "packages" / "shared"
     member_batch_size: int = 50
     worker_poll_seconds: float = 1.0
+    # /readyz reports "low" below this many wei on the relayer (it pays every ballot's fee). 0 = don't check.
+    relayer_min_balance_wei: int = 0
 
     ballot_rate_limit_per_minute: int = 30
+    # Behind a reverse proxy every request arrives from the proxy, so per-network limits need the visitor's address.
+    # Set to a header the trusted proxy OVERWRITES on every request (deploy/Caddyfile sets X-SecVote-Client).
+    # Empty = use the connecting address (local development). Never point it at a header clients can set.
+    client_ip_header: str = ""
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     web_url: str = "http://localhost:3000"  # links in emails point here
@@ -66,3 +74,38 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def production_problems(s: Settings) -> list[str]:
+    """Settings that are fine on a laptop but unsafe on a public server. Empty outside prod."""
+    if s.env != "prod":
+        return []
+    problems = []
+    for name in ("session_secret", "otp_pepper"):
+        value = getattr(s, name).get_secret_value()
+        if "change-me" in value or len(value) < 32:
+            problems.append(
+                f"SECVOTE_{name.upper()} must be a long random value (32+ characters), not the default"
+            )
+    if not s.cookie_secure:
+        problems.append("SECVOTE_COOKIE_SECURE must be true (the site must be served over HTTPS)")
+    if not s.official_login_code:
+        problems.append("SECVOTE_OFFICIAL_LOGIN_CODE must be true: officials confirm every sign-in by email")
+    if s.email_backend == "console":
+        problems.append("SECVOTE_EMAIL_BACKEND must be smtp or resend")
+    if not s.redis_url:
+        problems.append("SECVOTE_REDIS_URL is required")
+    if s.chain_required and not s.relayer_private_key.get_secret_value():
+        problems.append("SECVOTE_RELAYER_PRIVATE_KEY is required")
+    if s.web_url.startswith("http://"):
+        problems.append("SECVOTE_WEB_URL must be the public https:// address of the site")
+    if any(o.startswith("http://") for o in s.cors_origins):
+        problems.append("SECVOTE_CORS_ORIGINS must only list https:// origins")
+    return problems
+
+
+def check_production(s: Settings) -> None:
+    """Refuse to start a production server with unsafe settings."""
+    problems = production_problems(s)
+    if problems:
+        raise RuntimeError("Unsafe production settings:\n  - " + "\n  - ".join(problems))

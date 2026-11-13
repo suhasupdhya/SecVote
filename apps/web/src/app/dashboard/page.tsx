@@ -117,6 +117,17 @@ function Dashboard() {
         cta: "Vote now",
         primary: true,
       })
+    else if (r.reset_status === "approved" && !r.replacing && regOpen)
+      actions.push({
+        key: r.id + "reset",
+        icon: KeyRound,
+        tone: "warn",
+        title: `Create your new voting identity: ${title}`,
+        detail: e ? `Your passphrase reset was approved. Finish before ${fmtDate(e.reg_end)}.` : "Your passphrase reset was approved.",
+        href: `/elections/${slug}/register`,
+        cta: "Continue",
+        primary: true,
+      })
     else if (r.status === "approved" && regOpen)
       actions.push({
         key: r.id + "id",

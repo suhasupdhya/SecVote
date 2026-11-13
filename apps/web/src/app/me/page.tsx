@@ -32,7 +32,7 @@ const STATUS: Record<Registration["status"], { label: string; tone: Tone; step: 
   enrolled: { label: "On the roll", tone: "ok", step: 4 },
 }
 
-const ROLE_LABEL: Record<Role, string> = { voter: "Voter", admin: "Admin", officer: "Election officer", trustee: "Trustee", observer: "Observer" }
+const ROLE_LABEL: Record<Role, string> = { voter: "Voter", owner: "Super admin", admin: "Election admin", officer: "Election officer", trustee: "Trustee", observer: "Observer" }
 
 function ChangePassword() {
   const [open, setOpen] = useState(false)

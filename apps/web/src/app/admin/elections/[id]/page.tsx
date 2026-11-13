@@ -12,6 +12,7 @@ import {
   FileSearch,
   Gavel,
   Inbox,
+  KeyRound,
   ListChecks,
   Loader2,
   Lock,
@@ -28,6 +29,7 @@ import {
   Users,
   Vote,
   Trash2,
+  TriangleAlert,
   X,
   XCircle,
 } from "lucide-react"
@@ -83,6 +85,107 @@ const REG_LABEL: Record<RegistrationStatus, string> = {
   rejected: "Rejected",
 }
 
+type ResetRequest = { id: string; name: string; email: string; reg_no: string; requested_at: string; on_roll: boolean }
+
+/** Voters who forgot their passphrase and asked to replace their voting identity (registration only). */
+function ResetRequests({ e }: { e: Election }) {
+  const qc = useQueryClient()
+  const q = useQuery({
+    queryKey: ["resets", e.id],
+    queryFn: () => get<{ items: ResetRequest[] }>(`/admin/elections/${e.id}/resets`),
+    refetchInterval: 8_000,
+  })
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ tone: "ok" | "bad"; text: string } | null>(null)
+  async function act(r: ResetRequest, approve: boolean) {
+    if (approve && !confirm(`Approve a new voting identity for ${r.name} (${r.reg_no})?\n\nCheck it's really them first, for example in person or by phone.`))
+      return
+    setBusy(r.id)
+    setMsg(null)
+    try {
+      await post(`/admin/registrations/${r.id}/reset/${approve ? "approve" : "decline"}`)
+      setMsg({ tone: "ok", text: approve ? `Approved. ${r.name} has been emailed a code to create a new identity.` : `Declined. ${r.name} has been told.` })
+      await qc.invalidateQueries({ queryKey: ["resets", e.id] })
+    } catch (err) {
+      setMsg({ tone: "bad", text: err instanceof Error ? err.message : "Could not update the request" })
+    } finally {
+      setBusy(null)
+    }
+  }
+  const items = q.data?.items ?? []
+  if (!items.length && !msg) return null
+  return (
+    <Card
+      title="Passphrase resets"
+      icon={KeyRound}
+      description="These voters forgot their passphrase. Approving lets them replace their voting identity on the roll before registration closes."
+      padded={false}
+    >
+      {msg && (
+        <div className="px-5 pt-4">
+          <Alert tone={msg.tone}>{msg.text}</Alert>
+        </div>
+      )}
+      <ul className="mt-2 divide-y divide-line border-t border-line">
+        {items.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center gap-4 px-5 py-4">
+            <Avatar name={r.name} />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold">{r.name}</p>
+              <p className="truncate text-sm text-muted">
+                {r.email} · <span className="font-medium text-ink-2">{r.reg_no}</span> · asked {fmtDate(r.requested_at)}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" icon={Check} busy={busy === r.id} onClick={() => act(r, true)} aria-label={`Approve reset for ${r.name}`}>
+                Approve
+              </Button>
+              <Button size="sm" variant="secondary" icon={X} onClick={() => act(r, false)}>
+                Decline
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
+type ListStatus = { count: number; with_email: number; eligible_only: boolean }
+/** The duplicate-proof setup: a voter list, every entry tied to an official email, and only listed voters may apply. */
+const listReady = (s: ListStatus) => s.count > 0 && s.with_email === s.count && s.eligible_only
+
+/** Checklist shown before publishing: how well this election is protected against one person voting twice. */
+function VoterListReadiness({ e }: { e: Election }) {
+  const { data } = useQuery({ queryKey: ["eligibility", e.id], queryFn: () => get<ListStatus>(`/admin/elections/${e.id}/eligibility`) })
+  if (!data) return null
+  const items = [
+    { ok: data.count > 0, t: data.count > 0 ? `Voter list: ${data.count} people` : "No voter list yet" },
+    {
+      ok: data.count > 0 && data.with_email === data.count,
+      t: data.count === 0 ? "Official emails on the list" : `${data.with_email} of ${data.count} have an official email`,
+    },
+    { ok: data.eligible_only, t: data.eligible_only ? "Only people on the list can apply" : "Anyone with an allowed email can apply" },
+  ]
+  const ready = listReady(data)
+  return (
+    <div className={cx("rounded-xl p-4 ring-1 ring-inset", ready ? "bg-ok-50 ring-ok/25" : "bg-warn-50 ring-warn/25")}>
+      <p className={cx("text-sm font-semibold", ready ? "text-ok" : "text-warn")}>
+        {ready ? "Protected against duplicate voters" : "Not yet protected against duplicate voters"}
+      </p>
+      <ul className="mt-2 space-y-1 text-sm">
+        {items.map((i) => (
+          <li key={i.t} className="flex items-center gap-2">
+            {i.ok ? <CheckCircle2 className="size-4 text-ok" aria-hidden /> : <TriangleAlert className="size-4 text-warn" aria-hidden />}
+            {i.t}
+          </li>
+        ))}
+      </ul>
+      {!ready && <p className="mt-2 text-xs text-muted">Set this up in &ldquo;Voter list&rdquo; below, ideally from the voter register.</p>}
+    </div>
+  )
+}
+
 /** What will be deployed: shown before publishing so the admin can check it (the config is locked once on chain). */
 function SetupSummary({ e }: { e: Election }) {
   const facts = [
@@ -93,6 +196,7 @@ function SetupSummary({ e }: { e: Election }) {
   return (
     <Card title="What you're publishing" icon={ListChecks} description="Check the details. Nothing can be changed once the election is on chain.">
       <div className="space-y-6">
+        <VoterListReadiness e={e} />
         <dl className="grid gap-3 sm:grid-cols-3">
           {facts.map(([k, v]) => (
             <div key={k} className="rounded-xl bg-subtle px-4 py-3">
@@ -216,6 +320,20 @@ function ReviewQueue({ electionId, regOpen }: { electionId: string; regOpen: boo
                 <p className="truncate text-sm text-muted">
                   {r.email} · <span className="font-medium text-ink-2">{r.reg_no}</span> · {r.department}, year {r.year}
                 </p>
+                {r.listed_name && r.listed_name.toLowerCase() !== r.name.toLowerCase() && (
+                  <p className="mt-1 text-xs text-muted">
+                    Name on voter list: <span className="font-medium text-ink-2">{r.listed_name}</span>
+                  </p>
+                )}
+                {r.flags.length > 0 && (
+                  <ul className="mt-2 space-y-1" aria-label={`Warnings for ${r.name}`}>
+                    {r.flags.map((f) => (
+                      <li key={f} className="flex items-start gap-1.5 text-xs font-medium text-bad">
+                        <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden /> {f}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {r.status === "pending_review" && r.previous_reject_reason && (
                   <p className="mt-1 text-xs text-muted">
                     Rejected before: <span className="text-ink-2">{r.previous_reject_reason}</span>
@@ -429,6 +547,11 @@ function AdminElection() {
   const [msg, setMsg] = useState<{ tone: "ok" | "bad"; text: string } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [early, setEarly] = useState<Early | null>(null)
+  const elig = useQuery({
+    queryKey: ["eligibility", id],
+    queryFn: () => get<ListStatus>(`/admin/elections/${id}/eligibility`),
+    enabled: !!me?.roles.includes("admin"),
+  })
 
   if (isLoading) return <PageLoader />
   if (error || !e) return <Alert tone="bad" title="Not found">{error?.message}</Alert>
@@ -439,6 +562,14 @@ function AdminElection() {
   const rollEmpty = e.chain.member_count === 0
 
   async function action(path: string, label: string) {
+    if (path === "publish" && elig.data && !listReady(elig.data)) {
+      const ok = confirm(
+        "This election has no voter list with official emails, limited to listed voters.\n\n" +
+          "Without it, anyone with an allowed email can apply, every applicant must be checked by hand, and one person could " +
+          "register from two accounts.\n\nPublish anyway? You can still add the list until registration closes.",
+      )
+      if (!ok) return
+    }
     setBusy(path)
     setMsg(null)
     try {
@@ -649,6 +780,7 @@ function AdminElection() {
       <div className={cx("grid gap-8", onChain && "xl:grid-cols-[1.7fr_1fr]")}>
         <div className="space-y-8">
           {e.mode === "sealed" && <TrusteesCard e={e} />}
+          {isAdmin && e.status === "published" && (e.phase === "pending" || e.phase === "registration") && <ResetRequests e={e} />}
           {e.status === "published" ? <ReviewQueue electionId={e.id} regOpen={e.phase === "pending" || e.phase === "registration"} /> : <SetupSummary e={e} />}
           {isAdmin && <EligibilityCard e={e} />}
         </div>

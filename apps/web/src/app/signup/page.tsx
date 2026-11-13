@@ -144,7 +144,10 @@ function SignupFlow() {
             </div>
           )}
           <p className="rounded-xl bg-subtle p-3 text-xs text-muted">
-            We store your name and email only to run elections. We never store Aadhaar numbers, and you can delete your account at any time.
+            We store your name and email only to run elections. We never store Aadhaar numbers, and you can delete your account at any time.{" "}
+            <Link className="font-semibold text-brand hover:underline" href="/privacy" target="_blank">
+              Privacy notice
+            </Link>
           </p>
           {error && <Alert tone="bad">{error}</Alert>}
           <Button type="submit" busy={busy} icon={UserPlus} size="lg" className="w-full">

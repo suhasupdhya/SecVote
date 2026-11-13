@@ -73,6 +73,8 @@ contract Election is AccessControl, Pausable, Initializable {
 
     // ---------------------------------------------------------------- events
     event MembersAdded(uint256 indexed startIndex, uint256[] commitments, uint256 merkleRoot);
+    /// @notice An identity on the roll was replaced in place (lost-passphrase reset, before freeze).
+    event MemberReplaced(uint256 indexed index, uint256 oldCommitment, uint256 newCommitment, uint256 merkleRoot);
     event Frozen(uint256 merkleRoot, uint256 memberCount);
     event BallotCast(uint256 indexed nullifier, uint256 indexed index, bytes ballot);
     event KeyRevealed(bytes key);
@@ -192,6 +194,24 @@ contract Election is AccessControl, Pausable, Initializable {
         uint256 start = currentSize();
         semaphore.addMembers(groupId, commitments);
         emit MembersAdded(start, commitments, ISemaphoreGroups(address(semaphore)).getMerkleTreeRoot(groupId));
+    }
+
+    /// @notice Swaps one identity on the roll for a new one, in place (same position), e.g. when a voter
+    /// lost the passphrase to their old identity and an official approved a reset. Only during
+    /// registration and before the roll is frozen: once frozen, the roll can never change again.
+    /// @param merkleProofSiblings the Merkle proof of `oldCommitment` in the current tree.
+    function replaceMember(uint256 oldCommitment, uint256 newCommitment, uint256[] calldata merkleProofSiblings)
+        external
+        onlyRole(REGISTRAR_ROLE)
+        whenNotPaused
+    {
+        _requirePhase(Phase.Registration);
+        if (frozen) revert Election__AlreadyFrozen();
+        uint256 index = ISemaphoreGroups(address(semaphore)).indexOf(groupId, oldCommitment);
+        semaphore.updateMember(groupId, oldCommitment, newCommitment, merkleProofSiblings);
+        emit MemberReplaced(
+            index, oldCommitment, newCommitment, ISemaphoreGroups(address(semaphore)).getMerkleTreeRoot(groupId)
+        );
     }
 
     /// @notice Locks the roll. Callable by anyone once registration has ended.

@@ -1,0 +1,16 @@
+# HTTPS (certificates are obtained and renewed automatically) in front of the web app.
+# The web app forwards /api/* to the API over the private Docker network; the API is never exposed directly.
+#
+# Deliberately NO access log: Caddy keeps none unless a `log` directive is added. Don't add one: an access
+# log would store each visitor's IP address next to the time they submitted a ballot.
+{$SECVOTE_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 8MB
+	}
+	reverse_proxy web:3000 {
+		# The visitor's address for the API's per-network ballot rate limit (SECVOTE_CLIENT_IP_HEADER).
+		# header_up replaces any value a client sent, so it can't be spoofed. The API keeps only a salted hash, for 60 s.
+		header_up X-SecVote-Client {remote_host}
+	}
+}

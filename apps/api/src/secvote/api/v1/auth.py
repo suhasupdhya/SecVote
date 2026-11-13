@@ -16,7 +16,7 @@ from secvote.api.deps import (
 )
 from secvote.api.schemas import user_out
 from secvote.core.errors import Conflict
-from secvote.db.models import User
+from secvote.db.models import RoleRequest, User
 from secvote.domain.enums import Role
 from secvote.domain.phases import now_utc
 from secvote.services import audit
@@ -69,6 +69,24 @@ async def otp_verify(
 @router.post("/login")
 async def login(body: LoginIn, auth: AuthDep, response: Response, settings: SettingsDep) -> dict[str, Any]:
     user = await auth.authenticate(body.email, body.password)
+    if auth.needs_login_code(user):
+        # Officials: the password alone is not enough. A code goes to their email; no session yet.
+        await auth.start_login_code(user)
+        return {"user": None, "code_required": True, "email": user.email}
+    set_session_cookies(response, settings, await auth.create_session(user))
+    return {"user": user_out(user)}
+
+
+class LoginCodeIn(BaseModel):
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+@router.post("/login/code")
+async def login_code(
+    body: LoginCodeIn, auth: AuthDep, response: Response, settings: SettingsDep
+) -> dict[str, Any]:
+    user = await auth.finish_login_code(body.email, body.code)
     set_session_cookies(response, settings, await auth.create_session(user))
     return {"user": user_out(user)}
 
@@ -146,7 +164,18 @@ async def delete_me(user: UserDep, request: Request, response: Response, auth: A
             "You are the only admin. Make someone else an admin before deleting your account.",
             code="last_admin",
         )
+    if (
+        Role.OWNER in user.roles
+        and await User.find({"roles": Role.OWNER.value, "deleted_at": None}).count() <= 1
+    ):
+        raise Conflict(
+            "You are the only super admin. Make another admin a super admin before deleting your account.",
+            code="last_owner",
+        )
+    # Pending promotions involving this account would otherwise linger.
+    await RoleRequest.find({"$or": [{"user_id": user.id}, {"requested_by": user.id}]}).delete()
     user.email = f"deleted-{user.id}@deleted.invalid"
+    user.email_key = None
     user.name = "Deleted user"
     user.password_hash = "!"  # noqa: S105 - not a password, a disabled marker
     user.deleted_at = now_utc()

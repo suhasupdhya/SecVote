@@ -142,6 +142,27 @@ async def test_change_password(new_client, settings: Settings) -> None:  # type:
         assert (await phone.get("/api/v1/auth/me")).json()["user"] is None
 
 
+async def test_one_account_per_inbox(client: httpx.AsyncClient, settings: Settings) -> None:
+    from secvote.core.emails import canonical_email
+
+    assert canonical_email("A.d.h.i+vote2@GMAIL.com") == "adhi@gmail.com"
+    assert canonical_email("adhi@googlemail.com") == "adhi@gmail.com"
+    assert (
+        canonical_email("first.last+x@example.edu.in") == "first.last@example.edu.in"
+    )  # dots matter elsewhere
+
+    base = f"p{uuid.uuid4().hex[:6]}"
+    r = await client.post(
+        "/api/v1/auth/register", json={"email": f"{base}@example.edu.in", "name": "P Q", "password": VOTER_PW}
+    )
+    assert r.status_code == 201
+    for alias in (f"{base}+second@example.edu.in", f"{base.upper()}@EXAMPLE.edu.in"):
+        r = await client.post(
+            "/api/v1/auth/register", json={"email": alias, "name": "P Q", "password": VOTER_PW}
+        )
+        assert r.status_code == 409 and r.json()["error"]["code"] == "email_taken", alias
+
+
 async def test_csrf_required_for_writes(client: httpx.AsyncClient, settings: Settings) -> None:
     await signup_voter(client, settings)
     r = await client.post(

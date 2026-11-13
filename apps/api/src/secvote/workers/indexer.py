@@ -23,6 +23,7 @@ log = logging.getLogger("secvote.indexer")
 MAX_RANGE = 2_000
 EVENTS = (
     "MembersAdded",
+    "MemberReplaced",
     "Frozen",
     "BallotCast",
     "Paused",
@@ -97,6 +98,24 @@ class Indexer:
                     Registration.election_id == e.id, Registration.commitment == c
                 ).update({"$set": {"status": RegistrationStatus.ENROLLED.value, "member_index": start + i}})
             e.member_count = max(e.member_count, start + len(commitments))
+        elif name == "MemberReplaced":
+            # Lost-passphrase reset: the new identity takes the old one's place in the roll.
+            index, old, new = int(a["index"]), str(a["oldCommitment"]), str(a["newCommitment"])
+            await Member.find(Member.election_id == e.id, Member.index == index).update(
+                {"$set": {"commitment": new}}
+            )
+            await Registration.find(Registration.election_id == e.id, Registration.commitment == old).update(
+                {
+                    "$set": {
+                        "commitment": new,
+                        "status": RegistrationStatus.ENROLLED.value,
+                        "member_index": index,
+                        "reset_status": None,
+                        "pending_commitment": None,
+                        "replace_tx_id": None,
+                    }
+                }
+            )
         elif name == "Frozen":
             e.frozen = True
             e.frozen_root = str(a["merkleRoot"])

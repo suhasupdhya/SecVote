@@ -32,7 +32,7 @@ export function useMe() {
   })
 }
 
-export const isStaff = (u: User | null | undefined) => !!u?.roles.some((r) => r === "admin" || r === "officer")
+export const isStaff = (u: User | null | undefined) => !!u?.roles.some((r) => r === "owner" || r === "admin" || r === "officer")
 
 /** Where a user lands after signing in: officials get the admin console, everyone else their dashboard. */
 export const homeFor = (u: User) => (isStaff(u) ? "/admin" : "/dashboard")

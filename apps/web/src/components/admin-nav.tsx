@@ -2,11 +2,12 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { ListChecks, ScrollText, UsersRound } from "lucide-react"
+import { BookUser, ListChecks, ScrollText, UsersRound } from "lucide-react"
 import { cx } from "./ui"
 
 const TABS = [
   { href: "/admin", label: "Elections", icon: ListChecks, match: (p: string) => p === "/admin" || p.startsWith("/admin/elections") },
+  { href: "/admin/register", label: "Voter register", icon: BookUser, match: (p: string) => p.startsWith("/admin/register") },
   { href: "/admin/officials", label: "Officials", icon: UsersRound, match: (p: string) => p.startsWith("/admin/officials") },
   { href: "/admin/audit", label: "Audit log", icon: ScrollText, match: (p: string) => p.startsWith("/admin/audit") },
 ]

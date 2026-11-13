@@ -76,6 +76,8 @@ It needs only an RPC URL and the contract address. It decrypts and recounts ever
 - [x] Phase 3: voting end to end (browser identity + backup, relayer outbox, indexer, bulletin, tracker, turnout)
 - [x] Phase 4: sealed ballots (ECIES), 2-of-3 trustee key ceremony, key reveal + off-chain tally, ranked-choice (IRV), verify page + standalone verifier CLI
 - [ ] Phase 5: passkey identity, Safe multisig officers, audit anchoring, OCR pre-check, Tamil UI
-- [ ] Phase 6: Base Sepolia deploy, Docker/hosting, strict CSP, load test
+- [x] Phase 6 (partly): Docker/hosting setup, strict CSP, self-hosted proving files, production safety checks. Still to do: a real network deployment and a load test
+
+**Hosting:** follow [docs/hosting.md](docs/hosting.md) (Docker Compose + Caddy, contract deployment, production settings).
 
 See [SECURITY.md](SECURITY.md) and [docs/threat-model.md](docs/threat-model.md).

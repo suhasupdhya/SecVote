@@ -21,7 +21,7 @@ test("sealed election: trustees, ranked choice, verify", async ({ browser }) => 
   await signUp(voter, s, "Sealed Voter", voterEmail)
 
   // ---------------------------------------------------------------- admin: sealed election with a ranked race
-  await signIn(admin, s.admin.email, s.admin.password)
+  await signIn(admin, s.admin.email, s.admin.password, s)
   await admin.goto("/admin/elections/new")
   await admin.getByLabel("Title", { exact: true }).fill("Sealed Student Council")
   await admin.getByLabel("Organisation").fill("Example College")
@@ -62,6 +62,7 @@ test("sealed election: trustees, ranked choice, verify", async ({ browser }) => 
   await admin.getByRole("button", { name: "Run key ceremony" }).click()
   await expect(admin.getByText("Key ceremony complete")).toBeVisible({ timeout: 30_000 })
   await shot(admin, "21-ceremony-done")
+  admin.once("dialog", (d) => void d.accept()) // "no voter list" warning: fine for this test
   await admin.getByRole("button", { name: "Publish on chain" }).click()
   await expect(admin.getByRole("link", { name: "Public page" })).toBeVisible({ timeout: 60_000 }) // shown once the contract is live
   const { slug } = await apiElection(s, electionId)
@@ -84,6 +85,8 @@ test("sealed election: trustees, ranked choice, verify", async ({ browser }) => 
   const backup = voter.waitForEvent("download")
   await voter.getByRole("button", { name: "Download backup card" }).click()
   await backup
+  await voter.getByLabel("Type your passphrase once more").fill(PASS)
+  await voter.getByRole("button", { name: "Check", exact: true }).click()
   await voter.getByRole("checkbox").check()
   await voter.getByRole("button", { name: "Add me to the roll" }).click()
   await expect(voter.getByText("On the on-chain roll")).toBeVisible({ timeout: 60_000 })

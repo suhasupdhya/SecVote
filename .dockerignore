@@ -1,0 +1,24 @@
+# Keep secrets, local data and build output out of Docker images.
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/.venv
+**/__pycache__
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/.next
+**/.next-*
+**/test-results
+**/playwright-report
+apps/api/var
+apps/web/public/snark-artifacts
+.e2e
+.git
+.claude
+packages/contracts/out
+packages/contracts/cache
+packages/contracts/broadcast
+packages/contracts/lib
+deploy/*.env

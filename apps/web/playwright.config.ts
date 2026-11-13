@@ -19,7 +19,7 @@ export default defineConfig({
   webServer: {
     command: "node ../../scripts/stack.mjs --e2e",
     url: "http://localhost:3100",
-    timeout: 300_000,
+    timeout: process.env.SECVOTE_PROD_WEB === "1" ? 900_000 : 300_000, // a production build takes longer to start
     reuseExistingServer: false,
     stdout: "pipe",
     stderr: "pipe",

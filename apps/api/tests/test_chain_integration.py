@@ -398,6 +398,93 @@ async def test_officer_starts_voting_early_on_chain(new_client, settings: Settin
         assert res["races"][0]["candidates"][1]["votes"] == 1
 
 
+async def test_lost_passphrase_identity_is_replaced_on_chain(new_client, settings: Settings, worker) -> None:  # type: ignore[no-untyped-def]
+    """A voter forgets their passphrase: with an official's approval, a new identity replaces the old one
+    in place on the roll. The new identity can vote; the lost one no longer can."""
+    lost, fresh = "reset-voter-old", "reset-voter-new"
+    t = now_utc()
+    async with new_client() as admin, new_client() as voter:
+        await make_admin(admin)
+        body = {
+            "title": "Reset Club Vote",
+            "org": "Example College",
+            "races": [{"title": "Captain", "candidates": [{"name": "X"}, {"name": "Y"}]}],
+            "reg_start": (t - timedelta(minutes=1)).isoformat(),
+            "reg_end": (t + timedelta(days=3)).isoformat(),
+            "vote_start": (t + timedelta(days=4)).isoformat(),
+            "vote_end": (t + timedelta(days=5)).isoformat(),
+        }
+        eid = (await admin.post("/api/v1/admin/elections", json=body, headers=csrf(admin))).json()["id"]
+        await admin.post(f"/api/v1/admin/elections/{eid}/publish", headers=csrf(admin))
+        await worker()
+        email = await signup_voter(voter, settings)
+        rid = (
+            await voter.post(
+                f"/api/v1/elections/{eid}/registrations",
+                data={"reg_no": "RESET1", "department": "CSE", "year": "1", "consent": "true"},
+                files={"id_document": ("id.pdf", PDF, "application/pdf")},
+                headers=csrf(voter),
+            )
+        ).json()["id"]
+        await admin.post(f"/api/v1/admin/registrations/{rid}/approve", headers=csrf(admin))
+        await voter.post(
+            f"/api/v1/registrations/{rid}/commitment",
+            json={"commitment": _commitment(lost), "enrol_code": enrol_code(settings, email)},
+            headers=csrf(voter),
+        )
+        await worker(3)
+        assert (await voter.get("/api/v1/me/registrations")).json()["items"][0]["status"] == "enrolled"
+
+        # forgot the passphrase -> request -> official approves -> new identity replaces the old one
+        await voter.post(f"/api/v1/registrations/{rid}/reset", headers=csrf(voter))
+        await admin.post(f"/api/v1/admin/registrations/{rid}/reset/approve", headers=csrf(admin))
+        # the roll has one member, so the Merkle proof of the old commitment has no siblings
+        r = await voter.post(
+            f"/api/v1/registrations/{rid}/replace",
+            json={
+                "commitment": _commitment(fresh),
+                "enrol_code": enrol_code(settings, email),
+                "siblings": [],
+            },
+            headers=csrf(voter),
+        )
+        assert r.status_code == 200, r.text
+        await worker(3)
+        mine = (await voter.get("/api/v1/me/registrations")).json()["items"][0]
+        assert (
+            mine["commitment"] == _commitment(fresh)
+            and mine["reset_status"] is None
+            and not mine["replacing"]
+        )
+        members = (await admin.get(f"/api/v1/elections/{eid}/members")).json()["commitments"]
+        assert members == [_commitment(fresh)]
+
+        r = await admin.post(f"/api/v1/admin/elections/{eid}/start-voting", headers=csrf(admin))
+        assert r.status_code == 200, r.text
+        await worker(3)
+        e = await Election.get(eid)
+        assert e is not None and e.frozen
+        members = (await admin.get(f"/api/v1/elections/{eid}/members")).json()["commitments"]
+
+        ballot = fmt.encode_open([0])
+        async with new_client() as anon:
+            # the lost identity is no longer on the roll
+            old_proof = _prove(lost, e.scope or "", ballot, [_commitment(lost)])
+            r = await anon.post(
+                "/api/v1/ballots",
+                json={"election_id": eid, "proof": old_proof, "ballot": "0x" + ballot.hex()},
+            )
+            assert r.status_code == 400 and r.json()["error"]["code"] == "wrong_root"
+            # the new identity votes
+            proof = _prove(fresh, e.scope or "", ballot, members)
+            r = await anon.post(
+                "/api/v1/ballots", json={"election_id": eid, "proof": proof, "ballot": "0x" + ballot.hex()}
+            )
+            assert r.status_code == 202, r.text
+            await worker(3)
+            assert (await anon.get(f"/api/v1/ballots/{r.json()['ballot_id']}")).json()["on_bulletin"]
+
+
 async def test_orphaned_election_is_flagged_and_republishable(new_client, settings: Settings, worker) -> None:  # type: ignore[no-untyped-def]
     """Simulates a chain reset: the election's contract address has no code."""
     from secvote.db.models import Member

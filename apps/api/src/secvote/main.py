@@ -13,25 +13,39 @@ from fastapi.responses import JSONResponse
 
 from secvote.api.v1 import admin, auth, ballots, public, trustee, voter
 from secvote.chain import get_chain
-from secvote.core.config import Settings, get_settings
+from secvote.core.config import Settings, check_production, get_settings
 from secvote.core.errors import AppError
 from secvote.db import close_db, init_db
+from secvote.services import officials
+from secvote.services.auth import AuthService
 
 log = logging.getLogger("secvote")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    check_production(settings)  # refuse unsafe settings on a public server
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await init_db(settings)
+        await officials.ensure_owner()
+        await AuthService.backfill_email_keys()
         if settings.chain_required:
             await get_chain(settings).check()  # refuse to start on a missing chain; never redeploy
         yield
         await close_db()
 
-    app = FastAPI(title="SecVote API", version="2.0.0", lifespan=lifespan, docs_url="/api/docs")
+    # The interactive API docs are a development aid; production doesn't publish them.
+    dev_docs = settings.env != "prod"
+    app = FastAPI(
+        title="SecVote API",
+        version="2.0.0",
+        lifespan=lifespan,
+        docs_url="/api/docs" if dev_docs else None,
+        redoc_url=None,
+        openapi_url="/api/openapi.json" if dev_docs else None,
+    )
 
     @app.exception_handler(AppError)
     async def app_error(_: Request, exc: AppError) -> JSONResponse:
@@ -85,6 +99,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 checks["chain"] = "ok"
             except AppError as exc:
                 checks["chain"] = f"error: {exc.message}"
+            if settings.relayer_min_balance_wei and checks["chain"] == "ok":
+                wei = await get_chain(settings).relayer_balance()
+                low = wei < settings.relayer_min_balance_wei
+                checks["relayer_balance"] = f"low: {wei / 1e18:.4f} left, top it up" if low else "ok"
         ok = all(v == "ok" for v in checks.values())
         return JSONResponse({"ok": ok, "checks": checks}, status_code=200 if ok else 503)
 

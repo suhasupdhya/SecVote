@@ -20,14 +20,27 @@ export function buildGroup(commitments: readonly string[], frozenRoot: string): 
   return group
 }
 
+/** Where the proving files (semaphore-<depth>.wasm / .zkey) are served from. Production serves them from the
+ * site itself (set at build time), so voting doesn't depend on, or reveal voters to, a third-party server.
+ * Unset (development): the library downloads them from its default public host. */
+const ARTIFACTS = process.env.NEXT_PUBLIC_SNARK_ARTIFACTS_URL?.replace(/\/$/, "")
+
+/** The circuit depth the proof will use: the length of the member's Merkle proof (at least 1). */
+export function treeDepth(group: Group, index: number): number {
+  return Math.max(1, group.generateMerkleProof(index).siblings.length)
+}
+
 export async function proveBallot(
   identity: Identity,
   group: Group,
   ballot: Uint8Array,
   scope: string,
 ): Promise<ProofPayload> {
-  if (group.indexOf(identity.commitment) < 0) throw new Error("Your identity is not in the frozen roll for this election")
-  const p = await generateProof(identity, group, messageFor(ballot), BigInt(scope))
+  const index = group.indexOf(identity.commitment)
+  if (index < 0) throw new Error("Your identity is not in the frozen roll for this election")
+  const depth = treeDepth(group, index)
+  const artifacts = ARTIFACTS ? { wasm: `${ARTIFACTS}/semaphore-${depth}.wasm`, zkey: `${ARTIFACTS}/semaphore-${depth}.zkey` } : undefined
+  const p = await generateProof(identity, group, messageFor(ballot), BigInt(scope), depth, artifacts)
   return {
     merkleTreeDepth: p.merkleTreeDepth,
     merkleTreeRoot: p.merkleTreeRoot.toString(),

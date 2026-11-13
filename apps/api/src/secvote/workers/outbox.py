@@ -69,6 +69,8 @@ class Outbox:
         match tx.kind:
             case TxKind.ADD_MEMBERS:
                 return c.addMembers([int(x) for x in p["commitments"]])
+            case TxKind.REPLACE_MEMBER:
+                return c.replaceMember(int(p["old"]), int(p["new"]), [int(x) for x in p["siblings"]])
             case TxKind.FREEZE:
                 return c.freeze()
             case TxKind.CAST_BALLOT:
@@ -211,6 +213,11 @@ class Outbox:
         elif tx.kind == TxKind.ADD_MEMBERS:
             # Release the batch; the scheduler retries while registration is still open.
             await Registration.find(Registration.added_tx_id == tx.id).update({"$set": {"added_tx_id": None}})
+        elif tx.kind == TxKind.REPLACE_MEMBER:
+            # Usually the roll changed in between: the voter's page offers to try again (the reset stays approved).
+            await Registration.find(Registration.replace_tx_id == tx.id).update(
+                {"$set": {"replace_tx_id": None, "pending_commitment": None}}
+            )
 
 
 async def outbox_counts() -> dict[str, Any]:

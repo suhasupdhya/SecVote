@@ -75,6 +75,8 @@ def registration_out(r: Registration, election: Election | None = None) -> dict[
         "max_attempts": MAX_ATTEMPTS,
         "can_reapply": can_reapply(r),
         "enrol_code_sent": r.enrol_code_hash is not None,
+        "reset_status": r.reset_status,  # None | "requested" | "approved"
+        "replacing": r.replace_tx_id is not None,
         "enrol_code_expires": r.enrol_code_expires,
         "created_at": r.created_at,
     }

@@ -29,6 +29,16 @@ def tmp_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("secvote")
 
 
+_MAILBOX: dict[str, Path] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _mailbox_path(settings: Settings) -> None:
+    """Lets helpers without the fixture (make_admin, login) read emailed codes, whichever
+    module's `settings` is in use."""
+    _MAILBOX["path"] = settings.mailbox_file
+
+
 @pytest.fixture(scope="session")
 def settings(tmp_root: Path) -> Settings:
     return Settings(
@@ -116,7 +126,26 @@ async def signup_voter(c: httpx.AsyncClient, settings: Settings, email: str | No
     return email
 
 
-async def make_admin(c: httpx.AsyncClient, email: str | None = None) -> str:
+def mailbox_code(email: str, subject_has: str = "") -> str:
+    """The 6-digit code from the newest email to `email` (optionally with `subject_has` in the subject)."""
+    lines = [json.loads(x) for x in _MAILBOX["path"].read_text().splitlines()]
+    body = next(m["body"] for m in reversed(lines) if m["to"] == email and subject_has in m["subject"])
+    return next(
+        tok.rstrip(".") for tok in body.split() if tok.rstrip(".").isdigit() and len(tok.rstrip(".")) == 6
+    )
+
+
+async def login(c: httpx.AsyncClient, email: str, password: str) -> httpx.Response:
+    """Sign in, completing the emailed-code step that officials get."""
+    r = await c.post("/api/v1/auth/login", json={"email": email, "password": password})
+    if r.status_code == 200 and r.json().get("code_required"):
+        r = await c.post(
+            "/api/v1/auth/login/code", json={"email": email, "code": mailbox_code(email, "sign-in")}
+        )
+    return r
+
+
+async def make_admin(c: httpx.AsyncClient, email: str | None = None, *, owner: bool = False) -> str:
     from secvote.db.models import User
     from secvote.domain.enums import Role
     from secvote.services.auth import AuthService
@@ -131,11 +160,11 @@ async def make_admin(c: httpx.AsyncClient, email: str | None = None) -> str:
             email=email,
             name="Admin 2",
             password_hash=security.hash_password(ADMIN_PW),
-            roles=[Role.ADMIN, Role.OFFICER],
+            roles=[Role.OWNER, Role.ADMIN, Role.OFFICER] if owner else [Role.ADMIN, Role.OFFICER],
             email_verified=True,
         ).insert()
-    r = await c.post("/api/v1/auth/login", json={"email": email, "password": ADMIN_PW})
-    assert r.status_code == 200, r.text
+    r = await login(c, email, ADMIN_PW)
+    assert r.status_code == 200 and r.json()["user"], r.text
     return email
 
 

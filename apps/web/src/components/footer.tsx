@@ -64,6 +64,11 @@ export function Footer() {
                 Frequently asked questions
               </Link>
             </li>
+            <li>
+              <Link className={link} href="/privacy">
+                Privacy notice
+              </Link>
+            </li>
           </ul>
         </div>
         <div>

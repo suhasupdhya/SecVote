@@ -14,8 +14,10 @@ from beanie import PydanticObjectId
 from beanie.operators import In
 from pymongo.errors import DuplicateKeyError
 
+from secvote.chain import get_chain
 from secvote.core import security
 from secvote.core.config import Settings
+from secvote.core.emails import canonical_email, same_inbox
 from secvote.core.errors import (
     AppError,
     Conflict,
@@ -26,6 +28,7 @@ from secvote.core.errors import (
     WrongPhase,
 )
 from secvote.db.models import (
+    AuditEvent,
     Election,
     EligibleVoter,
     Member,
@@ -34,10 +37,10 @@ from secvote.db.models import (
     User,
     VoterProfile,
 )
-from secvote.domain.enums import ElectionStatus, Phase, RegistrationStatus, Role
+from secvote.domain.enums import ElectionStatus, Phase, RegistrationStatus, Role, TxKind
 from secvote.domain.phases import as_utc, now_utc
 from secvote.domain.reapply import MAX_ATTEMPTS, can_reapply
-from secvote.services import audit
+from secvote.services import audit, invitations, txs
 from secvote.services.auth import require_role
 from secvote.services.elections import get, phase_of
 from secvote.services.email import get_email_sender
@@ -112,11 +115,20 @@ async def apply(
     reg_no = normalise_reg_no(reg_no)
     department = department.strip()
     # Checked before the number is saved to the voter's profile, so a typo isn't locked in.
-    if e.eligible_only and not await _on_list(e, reg_no):
+    listed = await _listed(e, reg_no)
+    if e.eligible_only and listed is None:
         raise Forbidden(
             "This registration number isn't on the voter list for this election. "
             "Check it carefully, or contact your election office.",
             code="not_on_list",
+        )
+    if listed is not None and listed.email and not same_inbox(listed.email, user.email):
+        # One person, one account: the number belongs to the official email on the institution's list.
+        await audit.record(user.id, "registration.email_mismatch", f"election:{e.id}", {"reg_no": reg_no})
+        raise Forbidden(
+            "This registration number is linked to a different email on the voter list. "
+            "Sign in with your official email address to apply.",
+            code="email_mismatch",
         )
     profile = await VoterProfile.find_one(VoterProfile.user_id == user.id)
     if profile is None:
@@ -124,6 +136,10 @@ async def apply(
         try:
             await profile.insert()
         except DuplicateKeyError:
+            # Someone may be trying to register twice: officials see it in the audit log and in review.
+            await audit.record(
+                user.id, "registration.reg_no_conflict", f"election:{e.id}", {"reg_no": reg_no}
+            )
             raise Conflict(
                 "This registration number belongs to another account", code="reg_no_taken"
             ) from None
@@ -226,26 +242,34 @@ async def _reapply(
 # ---------------------------------------------------------------- eligibility list (pre-approved voters)
 MAX_ELIGIBLE = 100_000
 _REG_NO = re.compile(r"^[A-Z0-9][A-Z0-9 ./_-]{0,39}$")
+_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}\.[^@\s]{2,}$")
+
+
+def name_key(name: str) -> str:
+    """Compare names loosely: "Adhithya. R", "adhithya r" and "R Adhithya" all match."""
+    words = re.sub(r"[^\w\s]", " ", name.casefold()).split()
+    return " ".join(sorted(words))
 
 
 def normalise_reg_no(raw: str) -> str:
     return " ".join(raw.split()).upper()
 
 
-async def _on_list(e: Election, reg_no: str) -> bool:
-    return (
-        await EligibleVoter.find_one(EligibleVoter.election_id == e.id, EligibleVoter.reg_no == reg_no)
-        is not None
-    )
+async def _listed(e: Election, reg_no: str) -> EligibleVoter | None:
+    return await EligibleVoter.find_one(EligibleVoter.election_id == e.id, EligibleVoter.reg_no == reg_no)
 
 
 async def _auto_approve(settings: Settings, e: Election, reg: Registration) -> bool:
     """Approve an applicant whose registration number the office pre-approved. Not for two-person
-    (high-stakes) elections, re-applications after a rejection, or admins (who can't approve themselves)."""
+    (high-stakes) elections, re-applications after a rejection, admins (who can't approve themselves),
+    or accounts whose email differs from the official one on the list."""
     if e.high_stakes or reg.status != RegistrationStatus.PENDING_REVIEW or reg.attempts > 1:
         return False
     user = await User.get(reg.user_id)
-    if user is None or Role.ADMIN in user.roles or not await _on_list(e, reg.reg_no):
+    listed = await _listed(e, reg.reg_no)
+    if user is None or Role.ADMIN in user.roles or listed is None:
+        return False
+    if listed.email and not same_inbox(listed.email, user.email):
         return False
     res = await Registration.find_one(
         Registration.id == reg.id, Registration.status == RegistrationStatus.PENDING_REVIEW
@@ -274,25 +298,72 @@ async def eligibility(actor: User, election_id: str) -> dict[str, Any]:
         Phase.PENDING,
         Phase.REGISTRATION,
     )
+    q = EligibleVoter.find(EligibleVoter.election_id == e.id)
     return {
-        "count": await EligibleVoter.find(EligibleVoter.election_id == e.id).count(),
+        "count": await q.count(),
+        "with_email": await EligibleVoter.find(
+            EligibleVoter.election_id == e.id, {"email": {"$type": "string"}}
+        ).count(),
         "eligible_only": e.eligible_only,
         "editable": editable,
         "auto_approve": not e.high_stakes,
+        "invitations": await invitations.status(e),
     }
 
 
+def _clean_entries(entries: list[dict[str, Any]]) -> list[EligibleVoter]:
+    """Normalise and check an uploaded list: valid numbers, valid emails, and no number or
+    email used twice (which would let one person hold two places on the list)."""
+    by_reg: dict[str, dict[str, Any]] = {}
+    for raw in entries:
+        reg = normalise_reg_no(str(raw.get("reg_no") or ""))
+        if not reg:
+            continue
+        if not _REG_NO.match(reg):
+            raise AppError(f"{reg[:40]!r} is not a valid registration number", code="bad_reg_no")
+        email = (raw.get("email") or "").strip().lower() or None
+        if email and not _EMAIL.match(email):
+            raise AppError(f"{email[:60]!r} is not a valid email address", code="bad_email")
+        name = " ".join(str(raw.get("name") or "").split())[:120] or None
+        prev = by_reg.get(reg)
+        if prev and prev["email"] and email and prev["email"] != email:
+            raise AppError(f"{reg} appears twice with different emails", code="duplicate_reg_no")
+        by_reg[reg] = {"email": email or (prev or {}).get("email"), "name": name or (prev or {}).get("name")}
+    owners: dict[str, str] = {}
+    for reg, v in by_reg.items():
+        if v["email"]:
+            if canonical_email(v["email"]) in owners:
+                raise AppError(
+                    f"{owners[canonical_email(v['email'])]} and {reg} have the same email ({v['email']}). "
+                    "Each person should appear once.",
+                    code="duplicate_email",
+                )
+            owners[canonical_email(v["email"])] = reg
+    if len(by_reg) > MAX_ELIGIBLE:
+        raise AppError(
+            f"The list can have at most {MAX_ELIGIBLE:,} registration numbers", code="list_too_long"
+        )
+    return [
+        EligibleVoter(election_id=PydanticObjectId(), reg_no=reg, email=v["email"], name=v["name"])
+        for reg, v in sorted(by_reg.items())
+    ]
+
+
 async def set_eligibility(
-    settings: Settings, actor: User, election_id: str, reg_nos: list[str] | None, eligible_only: bool
+    settings: Settings,
+    actor: User,
+    election_id: str,
+    entries: list[dict[str, Any]] | None,
+    eligible_only: bool,
 ) -> dict[str, Any]:
-    """Replace the election's list of pre-approved registration numbers (or, with reg_nos=None, only
-    change whether the list is required). Pending applicants on the new list are approved straight away."""
+    """Replace the election's voter list (or, with entries=None, only change whether the list is
+    required). Pending applicants who match the new list are approved straight away."""
     require_role(actor, Role.ADMIN)
     e = await get(election_id)
     if e.status == ElectionStatus.PUBLISHED and await phase_of(e) not in (Phase.PENDING, Phase.REGISTRATION):
         raise WrongPhase("Registration has closed, so the voter list can no longer change")
     assert e.id is not None
-    if reg_nos is None:  # keep the list, change the setting only
+    if entries is None:  # keep the list, change the setting only
         if eligible_only and not await EligibleVoter.find(EligibleVoter.election_id == e.id).count():
             raise AppError(
                 "Add registration numbers before limiting applications to the list", code="empty_list"
@@ -303,37 +374,34 @@ async def set_eligibility(
             actor.id, "election.eligibility", f"election:{e.id}", {"eligible_only": eligible_only}
         )
         return {**await eligibility(actor, election_id), "auto_approved": 0}
-    clean = sorted({normalise_reg_no(r) for r in reg_nos if r.strip()})
-    bad = [r for r in clean if not _REG_NO.match(r)]
-    if bad:
-        raise AppError(
-            f"{len(bad)} entr{'y is' if len(bad) == 1 else 'ies are'} not a valid registration number, "
-            f"e.g. {bad[0][:40]!r}",
-            code="bad_reg_no",
-        )
-    if len(clean) > MAX_ELIGIBLE:
-        raise AppError(
-            f"The list can have at most {MAX_ELIGIBLE:,} registration numbers", code="list_too_long"
-        )
-    if eligible_only and not clean:
+    rows = _clean_entries(entries)
+    if eligible_only and not rows:
         raise AppError("Add registration numbers before limiting applications to the list", code="empty_list")
+    # Replacing the list keeps the invitation history of people who are still on it with the same email,
+    # so they aren't emailed again straight away.
+    before = {v.reg_no: v for v in await EligibleVoter.find(EligibleVoter.election_id == e.id).to_list()}
+    for row in rows:
+        row.election_id = e.id
+        old = before.get(row.reg_no)
+        if old and old.invited_at and same_inbox(old.email, row.email):
+            row.invited_at, row.invites = old.invited_at, old.invites
     await EligibleVoter.find(EligibleVoter.election_id == e.id).delete()
-    if clean:
-        await EligibleVoter.insert_many([EligibleVoter(election_id=e.id, reg_no=r) for r in clean])
+    if rows:
+        await EligibleVoter.insert_many(rows)
     e.eligible_only = eligible_only
     await e.save()
     await audit.record(
         actor.id,
         "election.eligibility",
         f"election:{e.id}",
-        {"count": len(clean), "eligible_only": eligible_only},
+        {"count": len(rows), "eligible_only": eligible_only},
     )
     approved = 0
-    if clean and e.status == ElectionStatus.PUBLISHED:
+    if rows and e.status == ElectionStatus.PUBLISHED:
         pending = await Registration.find(
             Registration.election_id == e.id,
             Registration.status == RegistrationStatus.PENDING_REVIEW,
-            In(Registration.reg_no, clean),
+            In(Registration.reg_no, [r.reg_no for r in rows]),
         ).to_list()
         for reg in pending:
             approved += await _auto_approve(settings, e, reg)
@@ -353,6 +421,66 @@ async def _get(reg_id: str) -> Registration:
     return reg
 
 
+async def _duplicate_flags(
+    e: Election,
+    regs: list[Registration],
+    users: dict[PydanticObjectId | None, User],
+    listed: dict[str, EligibleVoter],
+) -> dict[PydanticObjectId | None, list[str]]:
+    """Warnings that one person may be applying from more than one account. Shown to the reviewer;
+    nothing is decided automatically."""
+    flags: dict[PydanticObjectId | None, list[str]] = {r.id: [] for r in regs}
+
+    # 1. The same ID card file uploaded from different accounts (we keep only its SHA-256).
+    docs = await StoredDocument.find(
+        In(StoredDocument.id, [r.document_id for r in regs if r.document_id])
+    ).to_list()
+    sha_of = {d.id: d.sha256 for d in docs}
+    owners: dict[str, set[PydanticObjectId]] = {}
+    for d in await StoredDocument.find(In(StoredDocument.sha256, list(set(sha_of.values())))).to_list():
+        owners.setdefault(d.sha256, set()).add(d.owner_id)
+    for r in regs:
+        sha = sha_of.get(r.document_id) if r.document_id else None
+        if sha and len(owners.get(sha, set())) > 1:
+            flags[r.id].append("The same ID card file was uploaded from another account")
+
+    # 2. Same name, department and year as another applicant in this election.
+    everyone = await Registration.find(Registration.election_id == e.id).to_list()
+    names = {
+        u.id: u.name for u in await User.find(In(User.id, list({x.user_id for x in everyone}))).to_list()
+    }
+    seen: dict[tuple[str, str, int], set[PydanticObjectId]] = {}
+    for x in everyone:
+        key = (name_key(names.get(x.user_id, "")), x.department.strip().casefold(), x.year)
+        seen.setdefault(key, set()).add(x.user_id)
+    for r in regs:
+        u = users.get(r.user_id)
+        key = (name_key(u.name if u else ""), r.department.strip().casefold(), r.year)
+        if len(seen.get(key, set())) > 1:
+            flags[r.id].append("Another applicant has the same name, department and year")
+
+    # 3. Signed in with a different email from the official one on the voter list.
+    for r in regs:
+        u, row = users.get(r.user_id), listed.get(r.reg_no)
+        if u and row and row.email and not same_inbox(row.email, u.email):
+            flags[r.id].append(f"Voter list email is {row.email}, but this account is {u.email}")
+
+    # 4. Another account already tried to use this registration number.
+    tried = {
+        ev.data.get("reg_no")
+        for ev in await AuditEvent.find(
+            {
+                "action": {"$in": ["registration.reg_no_conflict", "registration.email_mismatch"]},
+                "data.reg_no": {"$in": [r.reg_no for r in regs]},
+            }
+        ).to_list()
+    }
+    for r in regs:
+        if r.reg_no in tried:
+            flags[r.id].append("Another account tried to use this registration number")
+    return flags
+
+
 async def review_queue(
     actor: User, election_id: str, status: RegistrationStatus | None
 ) -> list[dict[str, Any]]:
@@ -364,11 +492,12 @@ async def review_queue(
     regs = await q.sort("+created_at").to_list()
     users = {u.id: u for u in await User.find(In(User.id, [r.user_id for r in regs])).to_list()}
     listed = {
-        v.reg_no
+        v.reg_no: v
         for v in await EligibleVoter.find(
             EligibleVoter.election_id == e.id, In(EligibleVoter.reg_no, [r.reg_no for r in regs])
         ).to_list()
     }
+    flags = await _duplicate_flags(e, regs, users, listed)
     needed = 2 if e.high_stakes else 1
     out = []
     for r in regs:
@@ -388,6 +517,8 @@ async def review_queue(
                 "attempts": r.attempts,
                 "max_attempts": MAX_ATTEMPTS,
                 "on_list": r.reg_no in listed,
+                "listed_name": listed[r.reg_no].name if r.reg_no in listed else None,
+                "flags": flags.get(r.id, []),
                 "auto_approved": r.auto_approved,
                 "previous_reject_reason": r.previous_reject_reason,
                 "reject_reason": r.reject_reason,
@@ -416,7 +547,7 @@ def _enrol_digest(settings: Settings, reg: Registration, code: str) -> str:
     return security.otp_digest(settings.otp_pepper.get_secret_value(), "enrol", str(reg.id), code)
 
 
-async def issue_enrol_code(settings: Settings, reg: Registration) -> None:
+async def issue_enrol_code(settings: Settings, reg: Registration, *, reset: bool = False) -> None:
     """Email a one-time 6-digit code to the voter's registered address. It proves the person creating the
     voting identity controls that mailbox. It is NOT the voting key: that is created only in the browser."""
     user = await User.get(reg.user_id)
@@ -430,9 +561,14 @@ async def issue_enrol_code(settings: Settings, reg: Registration) -> None:
     reg.enrol_code_sent_at = now_utc()
     reg.enrol_code_attempts = 0
     await reg.save()
+    opening = (
+        f"Your request to reset your voting identity for {e.title} was approved.\n\n"
+        "Create a new voting identity with a new passphrase: it replaces the old one on the voter roll.\n\n"
+        if reset
+        else f"You're approved to vote in {e.title}.\n\n"
+    )
     body = (
-        f"You're approved to vote in {e.title}.\n\n"
-        f"Your enrolment code is {code}\n\n"
+        opening + f"Your enrolment code is {code}\n\n"
         "Enter it on the registration page together with your passphrase to create your voting identity. "
         f"It expires {expires:%d %b %Y, %H:%M} UTC.\n\n"
         "Never share this code. SecVote will never ask for your passphrase."
@@ -466,6 +602,10 @@ async def _own_enrolling(user: User, reg_id: str) -> Registration:
     reg = await _get(reg_id)
     if reg.user_id != user.id:
         raise NotFound("Registration not found")
+    if reg.status == RegistrationStatus.ENROLLED and reg.reset_status == RESET_APPROVED:
+        if reg.replace_tx_id is not None:
+            raise Conflict("Your new identity is already being put on the roll", code="commitment_locked")
+        return reg  # creating a replacement identity after an approved reset
     if reg.status not in (RegistrationStatus.APPROVED, RegistrationStatus.COMMITMENT_SUBMITTED):
         raise Conflict(f"Registration is {reg.status}")
     if reg.added_tx_id is not None:
@@ -590,6 +730,166 @@ async def submit_commitment(
         await reg.save()
     except DuplicateKeyError:
         raise Conflict("This commitment is already registered", code="commitment_taken") from None
+    return reg
+
+
+# ---------------------------------------------------------------- lost passphrase: identity reset
+RESET_REQUESTED = "requested"
+RESET_APPROVED = "approved"
+
+
+async def _registration_open(e: Election) -> None:
+    if e.frozen or await phase_of(e) not in (Phase.PENDING, Phase.REGISTRATION):
+        raise WrongPhase(
+            "Registration has closed and the voter roll is locked, so a voting identity can no longer be reset"
+        )
+
+
+async def request_reset(user: User, reg_id: str) -> Registration:
+    """The voter forgot their passphrase. An official must approve before anything changes."""
+    reg = await _get(reg_id)
+    if reg.user_id != user.id:
+        raise NotFound("Registration not found")
+    if reg.status not in (RegistrationStatus.COMMITMENT_SUBMITTED, RegistrationStatus.ENROLLED):
+        raise Conflict("You don't have a voting identity for this election yet", code="no_identity")
+    if reg.reset_status is not None:
+        raise Conflict("A reset is already in progress", code="reset_pending")
+    e = await Election.get(reg.election_id)
+    assert e is not None
+    await _registration_open(e)
+    reg.reset_status = RESET_REQUESTED
+    reg.reset_requested_at = now_utc()
+    reg.updated_at = now_utc()
+    await reg.save()
+    await audit.record(user.id, "registration.reset_request", f"registration:{reg.id}")
+    return reg
+
+
+async def resets(actor: User, election_id: str) -> list[dict[str, Any]]:
+    require_role(actor, Role.ADMIN)
+    e = await get(election_id)
+    regs = (
+        await Registration.find(
+            Registration.election_id == e.id, Registration.reset_status == RESET_REQUESTED
+        )
+        .sort("+reset_requested_at")
+        .to_list()
+    )
+    users = {u.id: u for u in await User.find(In(User.id, [r.user_id for r in regs])).to_list()}
+    return [
+        {
+            "id": str(r.id),
+            "name": users[r.user_id].name if r.user_id in users else "?",
+            "email": users[r.user_id].email if r.user_id in users else "?",
+            "reg_no": r.reg_no,
+            "requested_at": r.reset_requested_at,
+            "on_roll": r.member_index is not None,
+        }
+        for r in regs
+    ]
+
+
+async def approve_reset(settings: Settings, actor: User, reg_id: str) -> Registration:
+    require_role(actor, Role.ADMIN)
+    reg = await _get(reg_id)
+    if reg.user_id == actor.id:
+        raise Forbidden("You cannot approve a reset of your own voting identity")
+    if reg.reset_status != RESET_REQUESTED:
+        raise Conflict("There is no reset request to approve", code="no_reset")
+    e = await Election.get(reg.election_id)
+    assert e is not None
+    await _registration_open(e)
+    if reg.added_tx_id is not None and reg.member_index is None:
+        raise Conflict(
+            "This voter is being added to the roll right now. Try again in a few seconds.", code="roll_busy"
+        )
+    if reg.member_index is None:
+        # Not on the roll yet: simply start the identity step again.
+        reg.status = RegistrationStatus.APPROVED
+        reg.commitment = None
+        reg.reset_status = None
+    else:
+        reg.reset_status = RESET_APPROVED  # the new identity will replace the old one in place
+    reg.updated_at = now_utc()
+    await reg.save()
+    await audit.record(actor.id, "registration.reset_approve", f"registration:{reg.id}")
+    await issue_enrol_code(settings, reg, reset=True)
+    return reg
+
+
+async def decline_reset(settings: Settings, actor: User, reg_id: str) -> Registration:
+    require_role(actor, Role.ADMIN)
+    reg = await _get(reg_id)
+    if reg.reset_status not in (RESET_REQUESTED, RESET_APPROVED) or reg.replace_tx_id is not None:
+        raise Conflict("There is no reset to decline", code="no_reset")
+    reg.reset_status = None
+    reg.updated_at = now_utc()
+    await reg.save()
+    await audit.record(actor.id, "registration.reset_decline", f"registration:{reg.id}")
+    user, e = await User.get(reg.user_id), await Election.get(reg.election_id)
+    if user and e:
+        try:
+            await get_email_sender(settings).send(
+                user.email,
+                f"Your identity reset for {e.title} was not approved",
+                f"An election official declined your request to reset your voting identity for {e.title}.\n\n"
+                "Your existing identity stays on the voter roll. Contact your election office if you need help.",
+            )
+        except Exception:
+            log.exception("could not send reset-declined email")
+    return reg
+
+
+async def replace_commitment(
+    settings: Settings, user: User, reg_id: str, commitment: str, enrol_code: str, siblings: list[str]
+) -> Registration:
+    """Put the voter's new identity on the roll in place of the old one (after an approved reset).
+    `siblings` is the public Merkle proof of the old commitment, built in the browser from /members."""
+    reg = await _own_enrolling(user, reg_id)
+    if reg.reset_status != RESET_APPROVED or reg.member_index is None or reg.commitment is None:
+        raise Conflict("There is no approved reset for this registration", code="no_reset")
+    e = await Election.get(reg.election_id)
+    assert e is not None and e.id is not None
+    await _registration_open(e)
+    value = parse_commitment(commitment)
+    if value == reg.commitment or await Registration.find_one(
+        Registration.election_id == e.id, Registration.commitment == value
+    ):
+        raise Conflict("This identity is already on the roll", code="commitment_taken")
+    try:
+        proof = [str(int(x)) for x in siblings][:32]
+    except ValueError:
+        raise AppError("Malformed roll proof", code="bad_proof") from None
+    busy = Conflict(
+        "The voter roll is being updated right now. Wait a few seconds and try again.", code="roll_busy"
+    )
+    if await txs.open_tx(TxKind.ADD_MEMBERS, e.id) or await txs.open_tx(TxKind.REPLACE_MEMBER, e.id):
+        raise busy
+    if settings.chain_required and e.chain_address:
+        chain = get_chain(settings)
+        if await chain.roll_size(e.chain_address) != await Member.find(Member.election_id == e.id).count():
+            raise busy  # the browser's copy of the roll may be out of date
+        reason = await chain.simulate_replace(
+            e.chain_address, int(reg.commitment), int(value), [int(x) for x in proof]
+        )
+        if reason == "unsupported":
+            raise AppError(
+                "This election was created before identity resets were available, so its roll can't be changed.",
+                code="not_supported",
+            )
+        if reason is not None:
+            raise busy  # most likely the roll changed since the page loaded it
+    await check_enrol_code(settings, reg, enrol_code, consume=True)
+    tx = await txs.enqueue(
+        TxKind.REPLACE_MEMBER,
+        e.id,
+        {"address": e.chain_address, "old": reg.commitment, "new": value, "siblings": proof},
+    )
+    reg.pending_commitment = value
+    reg.replace_tx_id = tx.id
+    reg.updated_at = now_utc()
+    await reg.save()
+    await audit.record(user.id, "registration.reset_replace", f"registration:{reg.id}")
     return reg
 
 

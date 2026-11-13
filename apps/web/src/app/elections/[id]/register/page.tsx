@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useParams } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   CheckCircle2,
@@ -39,8 +39,20 @@ import {
   PhaseBadge,
   Spinner,
   Stepper,
+  fmtDate,
 } from "@/components/ui"
-import { MIN_PASSPHRASE, createIdentity, downloadBackup, encryptIdentity, saveLocal, type EncryptedIdentity } from "@/lib/crypto/identity"
+import { Group } from "@semaphore-protocol/core"
+import {
+  MIN_PASSPHRASE,
+  createIdentity,
+  decryptIdentity,
+  downloadBackup,
+  encryptIdentity,
+  loadLocal,
+  readIdentityBackup,
+  saveLocal,
+  type EncryptedIdentity,
+} from "@/lib/crypto/identity"
 
 const STEPS = ["Apply", "Review", "Identity", "On the roll"]
 function stepOf(reg?: Registration): number {
@@ -147,7 +159,16 @@ function ApplyForm({ e, onDone, previous }: { e: Election; onDone: () => void; p
   )
 }
 
-function IdentitySetup({ e, reg, onDone }: { e: Election; reg: Registration; onDone: () => void }) {
+/** Builds the public Merkle proof of the voter's OLD identity from the roll, for an in-place replacement. */
+async function oldIdentityProof(e: Election, reg: Registration): Promise<string[]> {
+  const roll = await get<{ commitments: string[] }>(`/elections/${e.id}/members`)
+  const group = new Group(roll.commitments.map((c) => BigInt(c)))
+  const index = group.indexOf(BigInt(reg.commitment ?? "0"))
+  if (index < 0) throw new Error("Your old identity isn't on the roll yet. Wait a moment and try again.")
+  return group.generateMerkleProof(index).siblings.map((x) => x.toString())
+}
+
+function IdentitySetup({ e, reg, onDone, replace = false }: { e: Election; reg: Registration; onDone: () => void; replace?: boolean }) {
   const { data: me } = useMe()
   const [code, setCode] = useState("")
   const [sent, setSent] = useState<string | null>(null)
@@ -156,8 +177,23 @@ function IdentitySetup({ e, reg, onDone }: { e: Election; reg: Registration; onD
   const [enc, setEnc] = useState<EncryptedIdentity | null>(null)
   const [downloaded, setDownloaded] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
+  const [again, setAgain] = useState("")
+  const [passOk, setPassOk] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  /** Make sure the voter really remembers the passphrase before they join the roll. */
+  async function checkAgain() {
+    if (!enc) return
+    setError(null)
+    try {
+      await decryptIdentity(enc, again)
+      setPassOk(true)
+    } catch {
+      setPassOk(false)
+      setError("That isn't the passphrase you just chose. If you've forgotten it already, reload this page and start again.")
+    }
+  }
 
   async function create(ev: React.FormEvent) {
     ev.preventDefault()
@@ -184,7 +220,12 @@ function IdentitySetup({ e, reg, onDone }: { e: Election; reg: Registration; onD
     setBusy(true)
     setError(null)
     try {
-      await post(`/registrations/${reg.id}/commitment`, { commitment: enc.commitment, enrol_code: code })
+      if (replace) {
+        const siblings = await oldIdentityProof(e, reg)
+        await post(`/registrations/${reg.id}/replace`, { commitment: enc.commitment, enrol_code: code, siblings })
+      } else {
+        await post(`/registrations/${reg.id}/commitment`, { commitment: enc.commitment, enrol_code: code })
+      }
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not submit")
@@ -205,7 +246,11 @@ function IdentitySetup({ e, reg, onDone }: { e: Election; reg: Registration; onD
   }
 
   return (
-    <Card title="You're approved: create your voting identity" icon={KeyRound}>
+    <Card
+      title={replace ? "Create your new voting identity" : "You're approved: create your voting identity"}
+      icon={KeyRound}
+      description={replace ? "Your reset was approved. The new identity replaces the old one on the voter roll, in the same place." : undefined}
+    >
       <div className="space-y-6">
         <div className="grid gap-3 sm:grid-cols-3">
           {[
@@ -298,16 +343,36 @@ function IdentitySetup({ e, reg, onDone }: { e: Election; reg: Registration; onD
                   Download backup card
                 </Button>
               </li>
-              <li className="flex items-start gap-3 rounded-xl border border-line p-4">
+              <li className="flex flex-wrap items-end gap-3 rounded-xl border border-line p-4">
                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-brand-50 text-xs font-bold text-brand">2</span>
-                <CheckRow disabled={!downloaded} checked={confirmed} onChange={(x) => setConfirmed(x.target.checked)} className="flex-1">
+                <div className="min-w-0 flex-1">
+                  <Field id="pass-again" label="Type your passphrase once more" hint="Checked only in your browser, to make sure you remember it.">
+                    <Input
+                      id="pass-again"
+                      type="password"
+                      autoComplete="off"
+                      value={again}
+                      onChange={(x) => {
+                        setAgain(x.target.value)
+                        setPassOk(false)
+                      }}
+                    />
+                  </Field>
+                </div>
+                <Button variant={passOk ? "soft" : "secondary"} icon={passOk ? CheckCircle2 : KeyRound} onClick={checkAgain} disabled={!again}>
+                  {passOk ? "Passphrase confirmed" : "Check"}
+                </Button>
+              </li>
+              <li className="flex items-start gap-3 rounded-xl border border-line p-4">
+                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-brand-50 text-xs font-bold text-brand">3</span>
+                <CheckRow disabled={!downloaded || !passOk} checked={confirmed} onChange={(x) => setConfirmed(x.target.checked)} className="flex-1">
                   I have saved the backup card somewhere safe and I remember my passphrase.
                 </CheckRow>
               </li>
             </ol>
             {error && <Alert tone="bad">{error}</Alert>}
-            <Button onClick={submitCommitment} disabled={!downloaded || !confirmed} busy={busy} size="lg" icon={ListPlus}>
-              Add me to the roll
+            <Button onClick={submitCommitment} disabled={!downloaded || !passOk || !confirmed} busy={busy} size="lg" icon={ListPlus}>
+              {replace ? "Replace my identity on the roll" : "Add me to the roll"}
             </Button>
           </div>
         )}
@@ -316,7 +381,130 @@ function IdentitySetup({ e, reg, onDone }: { e: Election; reg: Registration; onD
   )
 }
 
-function RollStatus({ e, reg }: { e: Election; reg: Registration }) {
+/** Lets a voter test their passphrase any time before voting. Nothing is sent anywhere. */
+function PassphraseCheck({ e, reg }: { e: Election; reg: Registration }) {
+  const [local, setLocal] = useState<EncryptedIdentity | null | undefined>(undefined)
+  const [file, setFile] = useState<EncryptedIdentity | null>(null)
+  const [pass, setPass] = useState("")
+  const [result, setResult] = useState<{ tone: "ok" | "bad"; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    loadLocal(e.id)
+      .then((x) => setLocal(x ?? null))
+      .catch(() => setLocal(null))
+  }, [e.id])
+  const enc = file ?? local
+
+  async function check(ev: React.FormEvent) {
+    ev.preventDefault()
+    if (!enc) return
+    setBusy(true)
+    setResult(null)
+    try {
+      const id = await decryptIdentity(enc, pass)
+      setResult(
+        id.commitment.toString() === reg.commitment
+          ? { tone: "ok", text: "Your passphrase works. Keep it safe until voting." }
+          : { tone: "bad", text: "The passphrase works, but this is an older identity, not the one on the roll. Use your latest backup card." },
+      )
+    } catch {
+      setResult({ tone: "bad", text: "That passphrase doesn't unlock your identity. Try again carefully, or use “I forgot my passphrase” below." })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (local === undefined) return null
+  return (
+    <form onSubmit={check} className="space-y-3 rounded-xl border border-line p-4">
+      <p className="flex items-center gap-2 text-sm font-semibold">
+        <KeyRound className="size-4 text-brand" aria-hidden /> Check my passphrase
+      </p>
+      {!local && (
+        <Field id="check-card" label="Backup card" hint="Your identity isn't saved in this browser: choose your backup card image.">
+          <Input
+            id="check-card"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,application/json,.json"
+            onChange={async (x) => {
+              const f = x.target.files?.[0]
+              if (!f) return
+              try {
+                setFile(await readIdentityBackup(f))
+                setResult(null)
+              } catch (err) {
+                setResult({ tone: "bad", text: err instanceof Error ? err.message : "Couldn't read that file" })
+              }
+            }}
+          />
+        </Field>
+      )}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-0 flex-1">
+          <Field id="check-pass" label="Passphrase">
+            <Input id="check-pass" type="password" autoComplete="current-password" value={pass} onChange={(x) => setPass(x.target.value)} />
+          </Field>
+        </div>
+        <Button type="submit" variant="secondary" busy={busy} disabled={!enc || !pass}>
+          Check
+        </Button>
+      </div>
+      {result && <Alert tone={result.tone}>{result.text}</Alert>}
+    </form>
+  )
+}
+
+/** Forgot the passphrase: ask an official to approve replacing the identity (registration only). */
+function ForgotPassphrase({ e, reg, open, onChange }: { e: Election; reg: Registration; open: boolean; onChange: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (reg.reset_status === "requested")
+    return (
+      <Alert tone="brand" title="Reset requested">
+        An election official will review your request. When it&apos;s approved you&apos;ll get an email with a code, and this page will let you
+        create a new voting identity.
+      </Alert>
+    )
+  if (!open || e.chain.frozen)
+    return (
+      <p className="text-xs text-muted">
+        Forgot your passphrase? Registration has closed and the voter roll is locked, so your voting identity can no longer be reset.
+      </p>
+    )
+  async function request() {
+    if (
+      !confirm(
+        "Ask to reset your voting identity?\n\nAn election official must approve it. You'll then create a new identity with a new passphrase, and it replaces your old one on the voter roll. This must be finished before registration closes.",
+      )
+    )
+      return
+    setBusy(true)
+    setError(null)
+    try {
+      await post(`/registrations/${reg.id}/reset`)
+      onChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send the request")
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="space-y-2 rounded-xl bg-subtle/60 p-4">
+      <p className="text-sm font-semibold">Forgot your passphrase?</p>
+      <p className="text-xs text-muted">
+        It can&apos;t be recovered, but until registration closes ({fmtDate(e.reg_end)}) you can replace your voting identity with a new one,
+        once an election official approves.
+      </p>
+      {error && <Alert tone="bad">{error}</Alert>}
+      <Button variant="secondary" size="sm" icon={RotateCw} busy={busy} onClick={request}>
+        I forgot my passphrase
+      </Button>
+    </div>
+  )
+}
+
+function RollStatus({ e, reg, open, onChange }: { e: Election; reg: Registration; open: boolean; onChange: () => void }) {
   const enrolled = reg.status === "enrolled"
   return (
     <Card
@@ -345,6 +533,8 @@ function RollStatus({ e, reg }: { e: Election; reg: Registration }) {
             Go to the ballot
           </ButtonLink>
         )}
+        {e.phase !== "closed" && <PassphraseCheck e={e} reg={reg} />}
+        {e.phase !== "closed" && e.phase !== "voting" && <ForgotPassphrase e={e} reg={reg} open={open} onChange={onChange} />}
       </div>
     </Card>
   )
@@ -369,9 +559,16 @@ export default function RegisterPage() {
       <EmptyState
         icon={LogIn}
         title="Sign in to register"
-        action={<ButtonLink href={`/login?next=/elections/${id}/register`}>Sign in</ButtonLink>}
+        action={
+          <div className="flex flex-wrap justify-center gap-3">
+            <ButtonLink href={`/signup?next=${encodeURIComponent(`/elections/${id}/register`)}`}>Create an account</ButtonLink>
+            <ButtonLink href={`/login?next=${encodeURIComponent(`/elections/${id}/register`)}`} variant="secondary">
+              Sign in
+            </ButtonLink>
+          </div>
+        }
       >
-        You need an account to apply for {e.title}.
+        You need an account to apply for {e.title}. Use your official email address.
       </EmptyState>
     )
 
@@ -433,7 +630,16 @@ export default function RegisterPage() {
             ) : (
               <Alert tone="warn">Registration closed before you added your identity.</Alert>
             ))}
-          {(reg?.status === "commitment_submitted" || reg?.status === "enrolled") && <RollStatus e={e} reg={reg} />}
+          {(reg?.status === "commitment_submitted" || reg?.status === "enrolled") &&
+            (reg.replacing ? (
+              <Card title="Putting your new identity on the roll…" icon={Hourglass}>
+                <Alert tone="brand">Your new identity is replacing the old one on the voter roll. This page updates automatically.</Alert>
+              </Card>
+            ) : reg.reset_status === "approved" && open && !e.chain.frozen ? (
+              <IdentitySetup e={e} reg={reg} onDone={refresh} replace />
+            ) : (
+              <RollStatus e={e} reg={reg} open={open} onChange={refresh} />
+            ))}
         </div>
 
         <aside className="space-y-5">

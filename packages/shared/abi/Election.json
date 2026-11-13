@@ -561,6 +561,29 @@
   },
   {
     "type": "function",
+    "name": "replaceMember",
+    "inputs": [
+      {
+        "name": "oldCommitment",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "newCommitment",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "merkleProofSiblings",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "resultHash",
     "inputs": [],
     "outputs": [
@@ -786,6 +809,37 @@
         "type": "bytes",
         "indexed": false,
         "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MemberReplaced",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "oldCommitment",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "newCommitment",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "merkleRoot",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false

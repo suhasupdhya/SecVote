@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 type Stack = { rpc: string; api: string; web: string; mailbox: string; admin: { email: string; password: string } }
 const STACK_FILE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".e2e", "stack.json")
+const PASS = "correct horse battery staple"
 
 async function stack(): Promise<Stack> {
   for (let i = 0; i < 120 && !existsSync(STACK_FILE); i++) await new Promise((r) => setTimeout(r, 500))
@@ -57,12 +58,29 @@ test("full open-mode election on Anvil", async ({ browser }) => {
   const voterCtx = await browser.newContext()
   const admin = await adminCtx.newPage()
   const voter = await voterCtx.newPage()
+  // The security policy must never block the app, and a hosted (production) build must not fetch the proving
+  // files from the third-party host.
+  const blocked: string[] = []
+  const thirdParty: string[] = []
+  for (const ctx of [adminCtx, voterCtx]) {
+    ctx.on("console", (m) => {
+      if (/Content Security Policy|Refused to (load|execute|connect|create)/i.test(m.text())) blocked.push(m.text())
+    })
+    ctx.on("request", (r) => {
+      if (r.url().includes("snark-artifacts.pse.dev")) thirdParty.push(r.url())
+    })
+  }
 
   // ---------------------------------------------------------------- admin creates + publishes
   await admin.goto("/login")
   await admin.getByLabel("Email").fill(s.admin.email)
   await admin.getByLabel("Password").fill(s.admin.password)
   await admin.getByRole("button", { name: "Sign in" }).click()
+  // officials confirm each sign-in with a code from their email
+  await expect(admin.getByLabel("Sign-in code")).toBeVisible()
+  await shot(admin, "00-official-sign-in-code")
+  await admin.getByLabel("Sign-in code").fill(otpFor(s, s.admin.email))
+  await admin.getByRole("button", { name: "Confirm and sign in" }).click()
   await admin.waitForURL((u) => u.pathname === "/admin") // officials land on the admin console
   // officials see only their own area in the header
   const adminNav = admin.getByRole("navigation", { name: "Main" })
@@ -91,7 +109,15 @@ test("full open-mode election on Anvil", async ({ browser }) => {
   await admin.getByRole("button", { name: "Save changes" }).click()
   await admin.waitForURL(/\/admin\/elections\/[a-f0-9]{24}$/)
   await expect(admin.getByText("Example College", { exact: true })).toBeVisible()
+  // no voter list yet: the admin is warned before publishing, and goes ahead (it's added later)
+  await expect(admin.getByText("Not yet protected against duplicate voters")).toBeVisible()
+  let warned = ""
+  admin.once("dialog", (d) => {
+    warned = d.message()
+    void d.accept()
+  })
   await admin.getByRole("button", { name: "Publish on chain" }).click()
+  await expect.poll(() => warned).toContain("no voter list")
   await expect(admin.getByRole("link", { name: "Public page" })).toBeVisible({ timeout: 60_000 }) // shown once the contract is live
   const { slug } = await apiElection(s, electionId)
   await shot(admin, "04-admin-console-published")
@@ -151,10 +177,17 @@ test("full open-mode election on Anvil", async ({ browser }) => {
   await shot(voter, "08-identity-setup")
 
   // the office uploads its voter list (pasted, first CSV column, header skipped, duplicates merged)
-  await admin.getByLabel("Registration numbers").fill("Reg No,Name\n21CS042,Test Voter\n21cs043,Other\n21CS043,Other")
-  await expect(admin.getByText("2 registration numbers found")).toBeVisible()
+  await admin.getByLabel("Registration numbers").fill("Reg No,Name\n21CS042,Test Voter\n21cs043,Other,other@example.edu.in\n21CS043,Other")
+  await expect(admin.getByText("2 registration numbers found, 1 with an email")).toBeVisible()
   await admin.getByRole("button", { name: "Save list" }).click()
   await expect(admin.getByText("Saved 2 registration numbers.")).toBeVisible()
+  // invite the listed person who hasn't registered yet (the test voter already has)
+  await expect(admin.getByText("0 invited · 1 registered · 1 not yet")).toBeVisible()
+  admin.once("dialog", (d) => void d.accept())
+  await admin.getByRole("button", { name: "Email 1 person who haven't registered" }).click()
+  await expect(admin.getByText("Sending 1 invitation.", { exact: false })).toBeVisible()
+  await expect(admin.getByText("1 invited · 1 registered · 1 not yet")).toBeVisible({ timeout: 20_000 })
+  await expect(admin.getByRole("button", { name: "Nobody to invite right now" })).toBeDisabled()
   await shot(admin, "07c-admin-voter-list")
   await voter.getByRole("button", { name: "Create identity" }).click()
   const download = voter.waitForEvent("download")
@@ -164,10 +197,49 @@ test("full open-mode election on Anvil", async ({ browser }) => {
   const cardPath = join(dirname(STACK_FILE), "identity-card.png")
   await card.saveAs(cardPath)
   if (process.env.SECVOTE_SHOTS) await card.saveAs(join(dirname(STACK_FILE), "shots", "08b-backup-card.png"))
+  // the voter proves they remember the passphrase before joining the roll
+  await voter.getByLabel("Type your passphrase once more").fill("not the passphrase")
+  await voter.getByRole("button", { name: "Check", exact: true }).click()
+  await expect(voter.getByText("That isn't the passphrase you just chose")).toBeVisible()
+  await voter.getByLabel("Type your passphrase once more").fill(PASS)
+  await voter.getByRole("button", { name: "Check", exact: true }).click()
+  await expect(voter.getByRole("button", { name: "Passphrase confirmed" })).toBeVisible()
   await voter.getByRole("checkbox").check()
   await voter.getByRole("button", { name: "Add me to the roll" }).click()
   await expect(voter.getByText("On the on-chain roll")).toBeVisible({ timeout: 60_000 })
   await shot(voter, "09-on-roll")
+
+  // ---------------------------------------------------------------- forgot the passphrase: reset before registration closes
+  await voter.getByLabel("Passphrase", { exact: true }).fill("is it this one?")
+  await voter.getByRole("button", { name: "Check", exact: true }).click()
+  await expect(voter.getByText("That passphrase doesn't unlock your identity")).toBeVisible()
+  voter.once("dialog", (d) => void d.accept())
+  await voter.getByRole("button", { name: "I forgot my passphrase" }).click()
+  await expect(voter.getByText("Reset requested")).toBeVisible()
+  await admin.reload()
+  admin.once("dialog", (d) => void d.accept())
+  await shot(admin, "07d-admin-passphrase-reset")
+  await admin.getByRole("button", { name: "Approve reset for Test Voter" }).click()
+  await expect(admin.getByText("Approved. Test Voter has been emailed")).toBeVisible()
+  await expect(voter.getByText("Create your new voting identity")).toBeVisible({ timeout: 15_000 })
+  await voter.getByLabel("Enrolment code from email").fill(otpFor(s, email))
+  await voter.getByLabel("Passphrase", { exact: true }).fill(PASS)
+  await voter.getByLabel("Repeat passphrase").fill(PASS)
+  await voter.getByRole("button", { name: "Create identity" }).click()
+  const newCard = voter.waitForEvent("download")
+  await voter.getByRole("button", { name: "Download backup card" }).click()
+  await (await newCard).saveAs(cardPath) // the new card replaces the old, now useless one
+  await voter.getByLabel("Type your passphrase once more").fill(PASS)
+  await voter.getByRole("button", { name: "Check", exact: true }).click()
+  await voter.getByRole("checkbox").check()
+  await voter.getByRole("button", { name: "Replace my identity on the roll" }).click()
+  // once the replacement is on chain, the passphrase unlocks the identity that is on the roll
+  await expect(async () => {
+    await voter.getByLabel("Passphrase", { exact: true }).fill(PASS)
+    await voter.getByRole("button", { name: "Check", exact: true }).click()
+    await expect(voter.getByText("Your passphrase works")).toBeVisible({ timeout: 2_000 })
+  }).toPass({ timeout: 60_000 })
+  await shot(voter, "09b-identity-replaced")
 
   // ---------------------------------------------------------------- officer opens voting early (no waiting)
   await admin.reload()
@@ -268,10 +340,39 @@ test("full open-mode election on Anvil", async ({ browser }) => {
   await shot(admin, "02-admin-dashboard")
   await admin.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Officials" }).click()
   await expect(admin.getByRole("heading", { name: "Officials and roles" })).toBeVisible()
-  await expect(admin.getByRole("group", { name: "Roles for Test Voter" })).toBeVisible()
+  const roles = admin.getByRole("group", { name: "Roles for Test Voter" })
+  await expect(roles).toBeVisible()
+  await roles.getByRole("button", { name: "Election officer" }).click()
+  await expect(admin.getByText("Test Voter is now Election officer.")).toBeVisible()
   await shot(admin, "02b-admin-officials")
   await admin.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Audit log" }).click()
   await expect(admin.getByText("Integrity check passed")).toBeVisible()
   await expect(admin.getByText("Result declared")).toBeVisible()
   await shot(admin, "02c-admin-audit")
+
+  // the institution's voter register: uploaded once, reused by every election
+  await admin.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Voter register" }).click()
+  await expect(admin.getByRole("heading", { name: "Voter register" })).toBeVisible()
+  // the Excel template downloads, and an Excel file uploads (here: the template itself, one example row)
+  const tpl = admin.waitForEvent("download")
+  await admin.getByRole("button", { name: "Download Excel template" }).click()
+  const template = await tpl
+  expect(template.suggestedFilename()).toBe("secvote-voter-register-template.xlsx")
+  const xlsxPath = join(dirname(STACK_FILE), "register-template.xlsx")
+  await template.saveAs(xlsxPath)
+  await admin.getByLabel("Upload Excel file").setInputFiles(xlsxPath)
+  await expect(admin.getByText("1 person found, 1 with an email")).toBeVisible()
+  await expect(admin.getByLabel("Or paste rows copied from Excel")).toHaveValue(/21CS001\tasha@college\.edu\tAsha R\tCSE\t3/)
+  await admin.getByLabel("Or paste rows copied from Excel").fill(
+    ["Registration number,Email,Name,Department,Year", "21CS501,one@example.edu.in,One,CSE,3", "21EC601,two@example.edu.in,Two,ECE,III"].join("\n"),
+  )
+  await expect(admin.getByText("2 people found, 2 with an email")).toBeVisible()
+  admin.once("dialog", (d) => void d.accept())
+  await admin.getByRole("button", { name: "Save register" }).click()
+  await expect(admin.getByText(/Saved 2 people to the voter register/)).toBeVisible()
+  await expect(admin.getByRole("cell", { name: "ECE" })).toBeVisible()
+  await shot(admin, "02d-admin-voter-register")
+
+  expect(blocked, "blocked by the Content Security Policy").toEqual([])
+  if (process.env.SECVOTE_PROD_WEB === "1") expect(thirdParty, "proving files must come from this site").toEqual([])
 })

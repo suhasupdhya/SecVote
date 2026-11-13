@@ -6,7 +6,7 @@ import httpx
 
 from secvote.core.config import Settings
 
-from .conftest import csrf, election_body, make_admin, published_election, signup_voter
+from .conftest import csrf, election_body, mailbox_code, make_admin, published_election, signup_voter
 
 
 async def test_grant_and_revoke_roles(new_client, settings: Settings) -> None:  # type: ignore[no-untyped-def]
@@ -29,11 +29,128 @@ async def test_grant_and_revoke_roles(new_client, settings: Settings) -> None:  
         assert (await other.get("/api/v1/admin/users")).status_code == 403
 
 
-async def test_admin_cannot_lock_themselves_out(client: httpx.AsyncClient) -> None:
-    await make_admin(client)
-    me = (await client.get("/api/v1/auth/me")).json()["user"]
-    r = await client.delete(f"/api/v1/admin/users/{me['id']}/roles/admin", headers=csrf(client))
-    assert r.status_code == 409 and r.json()["error"]["code"] in ("self_lockout", "last_admin")
+async def test_owner_cannot_lock_themselves_out(new_client) -> None:  # type: ignore[no-untyped-def]
+    async with new_client() as owner:
+        await make_admin(owner, owner=True)
+        me = (await owner.get("/api/v1/auth/me")).json()["user"]
+        for role in ("owner", "admin"):
+            r = await owner.delete(f"/api/v1/admin/users/{me['id']}/roles/{role}", headers=csrf(owner))
+            assert r.status_code == 409 and r.json()["error"]["code"] in ("self_lockout", "owner_is_admin")
+
+
+async def _uid(c: httpx.AsyncClient, email: str) -> str:
+    found = (await c.get("/api/v1/admin/users", params={"q": email})).json()["items"]
+    return next(u["id"] for u in found if u["email"] == email)
+
+
+async def test_only_super_admins_create_and_approve_admins(new_client, settings: Settings) -> None:  # type: ignore[no-untyped-def]
+    async with new_client() as owner, new_client() as owner2, new_client() as admin, new_client() as voter:
+        await make_admin(owner, owner=True)
+        await make_admin(owner2, owner=True)  # a second super admin
+        await make_admin(admin)  # an ordinary election admin
+        email = await signup_voter(voter, settings)
+        uid = await _uid(owner, email)
+
+        # a plain admin can hand out officer roles, but not admin
+        r = await admin.post(f"/api/v1/admin/users/{uid}/roles", json={"role": "admin"}, headers=csrf(admin))
+        assert r.status_code == 403
+        r = await admin.post(
+            f"/api/v1/admin/users/{uid}/roles", json={"role": "officer"}, headers=csrf(admin)
+        )
+        assert r.status_code == 200 and r.json()["pending"] is False and "officer" in r.json()["roles"]
+
+        # the super admin's request waits for a different super admin
+        r = await owner.post(f"/api/v1/admin/users/{uid}/roles", json={"role": "admin"}, headers=csrf(owner))
+        assert r.status_code == 200 and r.json()["pending"] is True and "admin" not in r.json()["roles"]
+        mail = _last_mail(settings, email=None, subject="Approval needed")
+        assert mail is not None and "Officials" in mail["body"]
+        r = await owner.post(f"/api/v1/admin/users/{uid}/roles", json={"role": "admin"}, headers=csrf(owner))
+        assert r.status_code == 409 and r.json()["error"]["code"] == "already_requested"
+
+        items = (await owner.get("/api/v1/admin/role-requests")).json()["items"]
+        req = next(i for i in items if i["user"]["id"] == uid)
+        assert req["can_approve"] is False  # the requester can't approve their own request
+        r = await owner.post(f"/api/v1/admin/role-requests/{req['id']}/approve", headers=csrf(owner))
+        assert r.status_code == 403 and r.json()["error"]["code"] == "needs_second_approver"
+
+        # an ordinary admin can never authorise a new administrator
+        mine = next(
+            i
+            for i in (await admin.get("/api/v1/admin/role-requests")).json()["items"]
+            if i["id"] == req["id"]
+        )
+        assert mine["can_approve"] is False
+        r = await admin.post(f"/api/v1/admin/role-requests/{req['id']}/approve", headers=csrf(admin))
+        assert r.status_code == 403
+
+        theirs = next(
+            i
+            for i in (await owner2.get("/api/v1/admin/role-requests")).json()["items"]
+            if i["id"] == req["id"]
+        )
+        assert theirs["can_approve"] is True
+        r = await owner2.post(f"/api/v1/admin/role-requests/{req['id']}/approve", headers=csrf(owner2))
+        assert r.status_code == 200 and "admin" in r.json()["roles"]
+        assert _last_mail(settings, email=None, subject="is now Election admin") is not None
+        assert not [
+            i
+            for i in (await owner.get("/api/v1/admin/role-requests")).json()["items"]
+            if i["id"] == req["id"]
+        ]
+
+        # only super admins remove admins
+        r = await admin.delete(f"/api/v1/admin/users/{uid}/roles/admin", headers=csrf(admin))
+        assert r.status_code == 403
+        r = await owner.delete(f"/api/v1/admin/users/{uid}/roles/admin", headers=csrf(owner))
+        assert r.status_code == 200 and "admin" not in r.json()["roles"]
+
+
+async def test_role_request_can_be_declined(new_client, settings: Settings) -> None:  # type: ignore[no-untyped-def]
+    async with new_client() as owner, new_client() as owner2, new_client() as admin, new_client() as voter:
+        await make_admin(owner, owner=True)
+        await make_admin(owner2, owner=True)  # so the request has to wait for approval
+        await make_admin(admin)  # declining is allowed for any admin: it never grants power
+        email = await signup_voter(voter, settings)
+        uid = await _uid(owner, email)
+        await owner.post(f"/api/v1/admin/users/{uid}/roles", json={"role": "admin"}, headers=csrf(owner))
+        req = next(
+            i
+            for i in (await admin.get("/api/v1/admin/role-requests")).json()["items"]
+            if i["user"]["id"] == uid
+        )
+        r = await admin.delete(f"/api/v1/admin/role-requests/{req['id']}", headers=csrf(admin))
+        assert r.status_code == 200
+        me = (await voter.get("/api/v1/auth/me")).json()["user"]
+        assert "admin" not in me["roles"]
+
+
+async def test_officials_confirm_sign_in_with_a_code(new_client, settings: Settings) -> None:  # type: ignore[no-untyped-def]
+    from .conftest import ADMIN_PW
+
+    async with new_client() as setup, new_client() as c:
+        email = await make_admin(setup)
+        r = await c.post("/api/v1/auth/login", json={"email": email, "password": ADMIN_PW})
+        assert r.status_code == 200 and r.json() == {"user": None, "code_required": True, "email": email}
+        assert c.cookies.get("sv_session") is None  # the password alone gives no session
+        r = await c.post("/api/v1/auth/login/code", json={"email": email, "code": "000000"})
+        assert r.status_code in (401, 429)
+        r = await c.post("/api/v1/auth/login", json={"email": email, "password": ADMIN_PW})
+        code = mailbox_code(email, "sign-in")
+        r = await c.post("/api/v1/auth/login/code", json={"email": email, "code": code})
+        assert r.status_code == 200 and r.json()["user"]["email"] == email
+        # a code without a fresh password step is refused
+        async with new_client() as other:
+            r = await other.post("/api/v1/auth/login/code", json={"email": email, "code": code})
+            assert r.status_code == 401
+
+
+def _last_mail(settings: Settings, *, email: str | None, subject: str) -> dict[str, str] | None:
+    import json
+
+    lines = [json.loads(x) for x in settings.mailbox_file.read_text().splitlines()]
+    return next(
+        (m for m in reversed(lines) if subject in m["subject"] and (email is None or m["to"] == email)), None
+    )
 
 
 async def test_delete_only_unpublished_drafts(client: httpx.AsyncClient) -> None:

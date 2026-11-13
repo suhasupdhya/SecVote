@@ -21,6 +21,8 @@ import { createHash, randomBytes } from "node:crypto"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const E2E = process.argv.includes("--e2e")
+// SECVOTE_PROD_WEB=1: run the web app as a production build (`next build` + `next start`) instead of `next dev`.
+const PROD_WEB = process.env.SECVOTE_PROD_WEB === "1"
 const RESET = process.argv.includes("--reset")
 const CHAIN_ID = Number(process.env.SECVOTE_STACK_CHAIN_ID ?? (E2E ? 31338 : 31337)) // separate deployment files, so an e2e run never clobbers the dev chain
 const OFFSET = Number(process.env.SECVOTE_STACK_PORT_OFFSET ?? 0) // run a second stack side by side
@@ -218,15 +220,22 @@ async function main() {
   await waitFor(`http://127.0.0.1:${PORTS.api}/readyz`, {}, "api")
 
   const web = join(ROOT, "apps", "web")
-  start("web", "pnpm", ["exec", "next", "dev", "--port", String(PORTS.web)], {
-    cwd: web,
-    env: {
-      SECVOTE_API_URL: `http://127.0.0.1:${PORTS.api}`,
-      NEXT_PUBLIC_RPC_URL: rpc,
-      NEXT_PUBLIC_CHAIN_ID: String(CHAIN_ID),
-      ...(E2E ? { NEXT_DIST_DIR: ".next-e2e" } : OFFSET ? { NEXT_DIST_DIR: `.next-${OFFSET}` } : {}),
-    },
-  })
+  const webEnv = {
+    SECVOTE_API_URL: `http://127.0.0.1:${PORTS.api}`,
+    NEXT_PUBLIC_RPC_URL: rpc,
+    NEXT_PUBLIC_CHAIN_ID: String(CHAIN_ID),
+    ...(E2E ? { NEXT_DIST_DIR: PROD_WEB ? ".next-e2e-prod" : ".next-e2e" } : OFFSET ? { NEXT_DIST_DIR: `.next-${OFFSET}` } : {}),
+  }
+  if (PROD_WEB) {
+    // Production build: security headers on, proving files served by the site itself (as when hosted).
+    log("building the web app for production (SECVOTE_PROD_WEB=1)")
+    run("node", [join(ROOT, "scripts", "fetch-snark-artifacts.mjs"), "--max-depth", "4"])
+    Object.assign(webEnv, { NEXT_PUBLIC_SNARK_ARTIFACTS_URL: "/snark-artifacts" })
+    run("pnpm", ["exec", "next", "build"], { cwd: web, env: webEnv })
+    start("web", "pnpm", ["exec", "next", "start", "--port", String(PORTS.web)], { cwd: web, env: webEnv })
+  } else {
+    start("web", "pnpm", ["exec", "next", "dev", "--port", String(PORTS.web)], { cwd: web, env: webEnv })
+  }
   await waitFor(`http://localhost:${PORTS.web}/`, {}, "web", 180_000)
 
   writeFileSync(join(STATE, "stack.json"), JSON.stringify({ rpc, api: `http://127.0.0.1:${PORTS.api}`, web: `http://localhost:${PORTS.web}`, mailbox, db, admin }, null, 2))

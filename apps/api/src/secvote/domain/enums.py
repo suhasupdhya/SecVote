@@ -5,6 +5,7 @@ from enum import StrEnum
 
 class Role(StrEnum):
     VOTER = "voter"
+    OWNER = "owner"  # shown as "Super admin": also an admin; the only role that can make or remove admins
     ADMIN = "admin"
     OFFICER = "officer"
     TRUSTEE = "trustee"
@@ -44,6 +45,7 @@ class RegistrationStatus(StrEnum):
 class TxKind(StrEnum):
     CREATE_ELECTION = "create_election"
     ADD_MEMBERS = "add_members"
+    REPLACE_MEMBER = "replace_member"  # lost-passphrase reset, before the roll is frozen
     FREEZE = "freeze"
     CAST_BALLOT = "cast_ballot"
     PAUSE = "pause"
