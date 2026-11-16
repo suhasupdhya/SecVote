@@ -14,7 +14,7 @@ from redis.asyncio import Redis
 from secvote.core import security
 from secvote.core.config import Settings
 from secvote.core.emails import canonical_email
-from secvote.core.errors import Conflict, Forbidden, NotFound, RateLimited, Unauthorized
+from secvote.core.errors import Conflict, Forbidden, NotFound, RateLimited, Unauthorized, Unavailable
 from secvote.db.models import User
 from secvote.domain.enums import Role
 from secvote.domain.phases import as_utc, now_utc
@@ -71,7 +71,12 @@ class AuthService:
             await user.insert()
         except DuplicateKeyError:
             raise Conflict("An account with this email already exists", code="email_taken") from None
-        await self.request_otp(email)
+        try:
+            await self.request_otp(email)
+        except Unavailable:
+            # The code couldn't be emailed: undo the signup, so trying again doesn't say "email taken".
+            await user.delete()
+            raise
         return user
 
     async def authenticate(self, email: str, password: str) -> User:
@@ -112,9 +117,9 @@ class AuthService:
         await self.r.set(code_key, digest, ex=self.s.otp_ttl_seconds)
         await self.r.delete(attempts_key)
         minutes = self.s.otp_ttl_seconds // 60
-        if purpose == OTP_LOGIN and self.s.env == "dev":
-            # Dev only: dev accounts often use made-up addresses, so show the code in the API log too.
-            log.warning("DEV sign-in code for %s: %s", email, code)
+        if self.s.env == "dev":
+            # Dev only: dev accounts often use made-up addresses (or email isn't set up), so show the code here too.
+            log.warning("DEV %s code for %s: %s", purpose, email, code)
         if purpose == OTP_LOGIN:
             subject = "Your SecVote sign-in code"
             body = (
@@ -130,7 +135,12 @@ class AuthService:
         else:
             subject = "Your SecVote code"
             body = f"Your SecVote verification code is {code}. It expires in {minutes} minutes."
-        await get_email_sender(self.s).send(email, subject, body)
+        try:
+            await get_email_sender(self.s).send(email, subject, body)
+        except Unavailable:
+            # Not delivered: let the person ask again straight away instead of waiting out the cooldown.
+            await self.r.delete(code_key, cooldown_key)
+            raise
 
     async def verify_otp(self, email: str, code: str, purpose: str = OTP_VERIFY_EMAIL) -> User:
         email = email.strip().lower()

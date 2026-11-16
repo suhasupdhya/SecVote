@@ -90,6 +90,12 @@ async function waitFor(url, init, label, timeoutMs = 120_000) {
 }
 
 async function main() {
+  // Packages missing (fresh clone, or node_modules deleted): say so plainly instead of a wall of compiler errors.
+  const needed = [
+    join(ROOT, "packages", "contracts", "node_modules", "@openzeppelin", "contracts"),
+    join(ROOT, "apps", "web", "node_modules", "next"),
+  ]
+  if (needed.some((p) => !existsSync(p))) throw new Error("Packages are not installed. Run `pnpm install` first, then `pnpm dev` again.")
   mkdirSync(STATE, { recursive: true })
   const rpc = `http://127.0.0.1:${PORTS.rpc}`
   const anvilCfg = join(STATE, `anvil-${PORTS.rpc}.json`)
@@ -195,6 +201,7 @@ async function main() {
       ? JSON.parse(readFileSync(credsFile, "utf8"))
       : { email: "officer@example.edu.in", password: randomBytes(12).toString("base64url") }
   if (!E2E) writeFileSync(credsFile, JSON.stringify(admin, null, 2))
+  let adminWorks = true // false when the database already has other admins and this login doesn't exist there
   {
     const cli = (args) =>
       spawnSync("uv", [...py(...args), "--password-env", "BOOTSTRAP_PW"], {
@@ -206,8 +213,7 @@ async function main() {
     if (out.status !== 0 && !E2E) {
       // An admin already exists (persistent dev DB): make sure the remembered officer login still works.
       const reset = cli(["secvote.cli.reset_password", "--email", admin.email])
-      if (reset.status !== 0)
-        log(`an admin already exists that isn't ${admin.email}. Reset its password with: cd apps/api; uv run secvote-reset-password --email <admin email>`)
+      adminWorks = reset.status === 0
     }
   }
 
@@ -240,7 +246,11 @@ async function main() {
 
   writeFileSync(join(STATE, "stack.json"), JSON.stringify({ rpc, api: `http://127.0.0.1:${PORTS.api}`, web: `http://localhost:${PORTS.web}`, mailbox, db, admin }, null, 2))
   const line = "─".repeat(60)
-  console.log(`\n${line}\n  SecVote is ready → http://localhost:${PORTS.web}\n\n  Officer / admin login\n    email:    ${admin.email}\n    password: ${admin.password}\n${E2E ? "" : `  (saved in .e2e/dev-admin.json; it stays the same on every restart)\n`}${line}\n`)
+  const login = adminWorks
+    ? `  Officer / admin login\n    email:    ${admin.email}\n    password: ${admin.password}\n${E2E ? "" : `  (saved in .e2e/dev-admin.json; it stays the same on every restart)\n`}`
+    : "  Sign in with your own admin account: this database already has one.\n" +
+      "  Forgot its password? Run:  cd apps/api; uv run secvote-reset-password --email <your admin email>\n"
+  console.log(`\n${line}\n  SecVote is ready → http://localhost:${PORTS.web}\n\n${login}${line}\n`)
 }
 
 main().catch((e) => {

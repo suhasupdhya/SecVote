@@ -70,13 +70,18 @@ def test_ballot_rate_limit_uses_the_proxy_header_only_when_configured() -> None:
 
     # Behind Caddy -> web, every request comes from the web container: without the header all voters share one limit.
     behind_proxy = _prod(client_ip_header="X-SecVote-Client")
-    assert client_address(_request("172.18.0.3", {"X-SecVote-Client": "203.0.113.7"}), behind_proxy) == "203.0.113.7"  # type: ignore[arg-type]
+    assert (
+        client_address(_request("172.18.0.3", {"X-SecVote-Client": "203.0.113.7"}), behind_proxy)
+        == "203.0.113.7"
+    )  # type: ignore[arg-type]
     assert client_address(_request("172.18.0.3", {}), behind_proxy) == "172.18.0.3"  # type: ignore[arg-type]
     # Not configured (local development): a client-supplied header is ignored, so it can't dodge the limit.
     assert client_address(_request("10.0.0.5", {"X-SecVote-Client": "1.2.3.4"}), _prod()) == "10.0.0.5"  # type: ignore[arg-type]
 
 
-def test_committed_deployment_record_is_used_when_the_generated_file_lacks_the_chain(tmp_path: object) -> None:
+def test_committed_deployment_record_is_used_when_the_generated_file_lacks_the_chain(
+    tmp_path: object,
+) -> None:
     import json
     from pathlib import Path
 
